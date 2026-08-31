@@ -517,3 +517,15 @@ def complete_session_section(section_instance_id: str) -> None:
 def complete_test(test_id: str) -> None:
     with db_cursor(commit=True) as cur:
         cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
+
+def health_check() -> Dict[str, Any]:
+    status = {"db_reachable": False, "schema_ok": False, "question_count": 0, "errors": []}
+    try:
+        initialize_database()
+        status["db_reachable"] = True
+        tables = verify_schema()
+        status["schema_ok"] = all(tables.values())
+        status["question_count"] = count_questions()
+    except Exception as e:
+        status["errors"].append(str(e))
+    return status
