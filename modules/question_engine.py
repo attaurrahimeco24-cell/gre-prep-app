@@ -102,11 +102,15 @@ def build_section_question_set(section_name: str, target_count: int, difficulty_
     return questions
 
 def seed_initial_question_bank(force_reset: bool = False) -> None:
+    # Delete child tables first to satisfy SQLite Foreign Key constraints
     if force_reset:
         with db_manager.db_cursor(commit=True) as cur:
+            cur.execute("DELETE FROM error_log")
+            cur.execute("DELETE FROM test_responses")
+            cur.execute("DELETE FROM session_sections")
+            cur.execute("DELETE FROM tests")
             cur.execute("DELETE FROM questions")
             cur.execute("DELETE FROM user_performance")
-            cur.execute("DELETE FROM error_log")
 
     metrics = db_manager.health_check()
     if metrics["question_count"] >= 10 and not force_reset:
