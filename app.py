@@ -1,51 +1,54 @@
+import os
+import sys
+
+# Tell the server to look in the root folder for modules
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import streamlit as st
-from typing import Dict, Any, Optional
-from modules import timer
+import gre_platform_merged as db_manager
+from modules import question_engine, testing_engine
+from ui import components, test_views, dashboard_views
 
-def apply_gre_theme() -> None:
-    st.markdown(
-        """
-        <style>
-        .stApp { background-color: #f8f9fa; font-family: 'Segoe UI', sans-serif; }
-        .metric-card {
-            background-color: #ffffff; border: 1px solid #e0e0e0;
-            border-left: 5px solid #1e3d59; padding: 15px; border-radius: 6px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 10px;
-        }
-        .metric-value { font-size: 28px; font-weight: bold; color: #1e3d59; }
-        .metric-label { font-size: 14px; color: #666666; text-transform: uppercase; }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+st.set_page_config(page_title="GRE AI Prep Platform", layout="wide", initial_sidebar_state="expanded")
+components.apply_gre_theme()
 
-def render_score_card(label: str, value: str, subtext: Optional[str] = None) -> None:
-    sub_html = f"<div style='font-size: 12px; color: #888;'>{subtext}</div>" if subtext else ""
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
-            {sub_html}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+@st.cache_resource
+def setup_database():
+    db_manager.initialize_database()
+    question_engine.seed_initial_question_bank()
 
-def render_cbt_header(section_name: str, section_instance_id: str, duration_seconds: int) -> Dict[str, Any]:
-    time_status = timer.get_section_time_status(section_instance_id, duration_seconds)
-    col1, col2, col3 = st.columns([2, 1, 1])
+setup_database()
+
+if "active_page" not in st.session_state:
+    st.session_state["active_page"] = "Home"
+if "active_test_id" not in st.session_state:
+    st.session_state["active_test_id"] = None
+
+st.sidebar.title("GRE AI Prep")
+page = st.sidebar.radio(
+    "Navigation",
+    ["Home", "Full GRE Simulation", "Analytics Dashboard"],
+    index=["Home", "Full GRE Simulation", "Analytics Dashboard"].index(st.session_state["active_page"])
+)
+st.session_state["active_page"] = page
+
+if page == "Home":
+    st.title("GRE Testing Engine")
+    st.markdown("This platform simulates the 2026 shorter GRE General Test format.")
     
-    with col1:
-        st.markdown(f"### {section_name.replace('_', ' ').title()}")
-    with col2:
-        st.markdown(f"**Status:** {time_status['status'].upper()}")
-    with col3:
-        timer_color = "#dc3545" if time_status['remaining_seconds'] < 300 else "#1e3d59"
-        st.markdown(
-            f"<div style='font-size: 22px; font-weight: bold; color: {timer_color}; text-align: right;'>"
-            f"{time_status['formatted_time']}</div>",
-            unsafe_allow_html=True
-        )
-    st.divider()
-    return time_status
+    if st.button("Start Full GRE Simulation", type="primary"):
+        test_data = testing_engine.initialize_test_session("full_length")
+        st.session_state["active_test_id"] = test_data["test_id"]
+        st.session_state["active_page"] = "Full GRE Simulation"
+        st.rerun()
+
+elif page == "Full GRE Simulation":
+    if not st.session_state["active_test_id"]:
+        st.warning("No active test. Return to Home to start.")
+    else:
+        test_views.render_exam_simulation(st.session_state["active_test_id"])
+
+elif page == "Analytics Dashboard":
+    dashboard_views.render_analytics_dashboard()
