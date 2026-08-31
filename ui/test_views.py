@@ -61,10 +61,14 @@ def render_exam_simulation(test_id: str) -> None:
     existing_ans = st.session_state["user_answers"].get(q_id, "")
     selected_ans = None
 
+    # Fix: Route input types correctly based on the GRE question type
     if q_type == "Numeric Entry":
         selected_ans = st.text_input("Enter your numerical answer:", value=existing_ans)
+    elif q_type == "Issue Task":
+        selected_ans = st.text_area("Write your essay response here:", value=existing_ans, height=400)
     else:
-        options = current_q.get("options", ["A", "B", "C", "D"])
+        # Fallback to empty list if options is explicitly set to None in the DB
+        options = current_q.get("options") or ["A", "B", "C", "D"]
         idx_val = options.index(existing_ans) if existing_ans in options else 0
         selected_ans = st.radio("Select Choice:", options, index=idx_val if existing_ans else None)
 
