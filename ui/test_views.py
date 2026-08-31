@@ -38,6 +38,7 @@ def render_exam_simulation(test_id: str) -> None:
         st.session_state["active_sec_instance_id"] = sec_instance_id
         st.session_state["current_q_index"] = 0
         st.session_state["user_answers"] = {}
+        st.session_state["marked_for_review"] = {} # Initialize review flags
         st.session_state["q_start_time"] = time.time()
 
     payload = st.session_state["current_section_payload"]
@@ -66,12 +67,31 @@ def render_exam_simulation(test_id: str) -> None:
             col_idx = idx % 4
             qid = q["question_id"]
             btn_type = "primary" if idx == q_index else "secondary"
-            if cols[col_idx].button(str(idx + 1), key=f"nav_{qid}", type=btn_type):
+            
+            # Show a red flag if marked for review
+            is_marked = st.session_state.get("marked_for_review", {}).get(qid, False)
+            btn_label = f"🚩 {idx + 1}" if is_marked else str(idx + 1)
+            
+            if cols[col_idx].button(btn_label, key=f"nav_{qid}", type=btn_type):
                 st.session_state["current_q_index"] = idx
                 st.session_state["q_start_time"] = time.time()
                 st.rerun()
 
-    st.markdown(f"**Question {q_index + 1} of {len(questions)}**")
+    # Main Question UI Header
+    col_q1, col_q2 = st.columns([3, 1])
+    with col_q1:
+        st.markdown(f"**Question {q_index + 1} of {len(questions)}**")
+    with col_q2:
+        # Mark for review toggle
+        mark_key = f"mark_{q_id}"
+        def toggle_mark():
+            st.session_state["marked_for_review"][q_id] = st.session_state[mark_key]
+        
+        st.checkbox("🚩 Mark for Review", 
+                    value=st.session_state.get("marked_for_review", {}).get(q_id, False), 
+                    key=mark_key, 
+                    on_change=toggle_mark)
+
     st.markdown(f"<div style='font-size: 1.15rem; font-weight: 500; padding: 10px 0 20px 0; color: #0F172A;'>{current_q['question_text']}</div>", unsafe_allow_html=True)
 
     existing_ans = st.session_state["user_answers"].get(q_id, "")
@@ -85,10 +105,13 @@ def render_exam_simulation(test_id: str) -> None:
             testing_engine.submit_answer_atomically(test_id, sec_instance_id, q_id, str(val), time_spent) 
             st.session_state["q_start_time"] = time.time()
 
+    # Dynamic input routing
     if q_type == "Numeric Entry":
         st.text_input("Enter your numerical answer:", value=existing_ans, key=widget_key, on_change=autosave_answer)
     elif q_type == "Issue Task":
-        st.text_area("Write your essay response here:", value=existing_ans, height=350, key=widget_key, on_change=autosave_answer)
+        word_count = len(existing_ans.split()) if existing_ans else 0
+        st.caption(f"**Current Word Count:** {word_count} *(Recommended: 400 - 600 words)*")
+        st.text_area("Write your essay response here (saves when you click out):", value=existing_ans, height=350, key=widget_key, on_change=autosave_answer)
     else:
         options = current_q.get("options") or ["A", "B", "C", "D", "E"]
         try:
@@ -100,6 +123,7 @@ def render_exam_simulation(test_id: str) -> None:
 
     st.divider()
     
+    # Navigation Footer 
     c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
     
     if c1.button("⬅️ Previous", disabled=(q_index == 0), use_container_width=True):
