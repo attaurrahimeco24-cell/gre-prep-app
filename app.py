@@ -20,6 +20,16 @@ def setup_database():
 
 setup_database()
 
+# --- STATE MANAGEMENT UTILITIES ---
+def clear_test_state():
+    """Wipes all ephemeral test data from memory to prevent test-bleeding."""
+    keys_to_clear = [
+        "active_test_id", "current_section_payload", "active_sec_instance_id", 
+        "current_q_index", "user_answers", "q_start_time", "marked_for_review"
+    ]
+    for k in keys_to_clear:
+        st.session_state.pop(k, None)
+
 if "active_page" not in st.session_state:
     st.session_state["active_page"] = "Home"
 if "active_test_id" not in st.session_state:
@@ -31,7 +41,7 @@ st.sidebar.title("🎓 GRE AI Prep Platform")
 with st.sidebar.expander("⚙️ Admin Settings", expanded=False):
     if st.button("🔄 Force Reset & Re-seed", use_container_width=True):
         question_engine.seed_initial_question_bank(force_reset=True)
-        st.session_state["active_test_id"] = None
+        clear_test_state()
         st.session_state["active_page"] = "Home"
         st.toast("Database reset! New question bank loaded.", icon="✅")
         st.rerun()
@@ -96,6 +106,7 @@ if page == "Home":
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         if st.button("🚀 Start Full GRE Simulation", type="primary", use_container_width=True):
+            clear_test_state() # Ensure memory is wiped before starting
             test_data = testing_engine.initialize_test_session("full_length")
             st.session_state["active_test_id"] = test_data["test_id"]
             st.session_state["active_page"] = "Full GRE Simulation"
@@ -110,6 +121,11 @@ if page == "Home":
 elif page == "Full GRE Simulation":
     if not st.session_state["active_test_id"]:
         st.warning("No active exam found. Return home to initialize a new test session.")
+        if st.button("Initialize Exam", type="primary"):
+            clear_test_state()
+            test_data = testing_engine.initialize_test_session("full_length")
+            st.session_state["active_test_id"] = test_data["test_id"]
+            st.rerun()
     else:
         test_views.render_exam_simulation(st.session_state["active_test_id"])
 
