@@ -8,7 +8,7 @@ if PROJECT_ROOT not in sys.path:
 import streamlit as st
 import gre_platform_merged as db_manager
 from modules import question_engine, testing_engine
-from ui import components, test_views, dashboard_views
+from ui import components, test_views, dashboard_views, admin_views
 
 st.set_page_config(page_title="GRE AI Prep Platform", layout="wide", initial_sidebar_state="expanded")
 components.apply_gre_theme()
@@ -189,11 +189,18 @@ elif page == "Admin Dashboard":
         components.render_score_card("Tests Administered", str(total_tests))
 
     st.divider()
-    st.info("Additional Administrative Modules (Question Bank, Users, Logs) are pending Phase 5 implementation.")
+    st.info("Additional Administrative Modules (Question Bank, Users, Logs) are now active in the sidebar.")
 
-elif page in ["Question Bank", "Test Configurations", "User Management", "System Audit Logs"]:
+# NEW: Connected the Question Bank module securely
+elif page == "Question Bank":
+    if role not in ["ADMIN", "SUPER_ADMIN"]:
+        st.error("Unauthorized Access Protocol Triggered.")
+        st.stop()
+    admin_views.render_question_bank()
+
+elif page in ["Test Configurations", "User Management", "System Audit Logs"]:
     if role not in ["ADMIN", "SUPER_ADMIN"]:
         st.error("Unauthorized Access Protocol Triggered.")
         st.stop()
     st.title(f"🛠️ {page}")
-    st.warning("Module under construction (Scheduled for Phase 5/6).")
+    st.warning("Module under construction (Scheduled for Phase 6 & 7).")
