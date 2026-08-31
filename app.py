@@ -29,7 +29,7 @@ st.sidebar.title("🎓 GRE AI Prep Platform")
 
 # --- Control Panel for Reseeding ---
 with st.sidebar.expander("⚙️ Admin Settings", expanded=False):
-    if st.button("🔄 Force Reset & Re-seed Questions", use_container_width=True):
+    if st.button("🔄 Force Reset & Re-seed", use_container_width=True):
         question_engine.seed_initial_question_bank(force_reset=True)
         st.session_state["active_test_id"] = None
         st.session_state["active_page"] = "Home"
@@ -44,28 +44,72 @@ page = st.sidebar.radio(
 st.session_state["active_page"] = page
 
 if page == "Home":
-    st.title("GRE Exam Engine & Testing Center")
-    st.markdown("Simulating the official 2026 shorter GRE General Test format.")
+    # --- HERO SECTION ---
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 2rem 0;">
+            <h1 style="font-size: 3.5rem; font-weight: 800; color: #0F172A; letter-spacing: -0.02em; margin-bottom: 0.5rem;">
+                Elevate Your Future.
+            </h1>
+            <p style="font-size: 1.25rem; color: #475569; max-width: 700px; margin: 0 auto; line-height: 1.6;">
+                Master the modern, shortened GRE with adaptive AI algorithms, high-fidelity simulations, and deep diagnostic telemetry.
+            </p>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+    # --- ECONOMIST QUOTATION BLOCK ---
+    st.markdown(
+        """
+        <div style="background-color: #FFFFFF; border-left: 5px solid #2563EB; padding: 24px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); margin: 2rem auto; max-width: 800px;">
+            <p style="font-size: 1.1rem; color: #334155; font-style: italic; margin-bottom: 12px; line-height: 1.7;">
+                "Human capital is by far the most important form of capital in creating wealth and growth. The most valuable of all capital is that invested in human beings."
+            </p>
+            <p style="font-size: 0.95rem; font-weight: 700; color: #0F172A; margin: 0;">
+                — Gary S. Becker
+            </p>
+            <p style="font-size: 0.85rem; color: #64748B; margin: 0;">
+                Nobel Laureate in Economic Sciences, Pioneer of Human Capital Theory
+            </p>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+    st.divider()
+
+    # --- FEATURE HIGHLIGHTS ---
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        st.markdown("### 🧠 Adaptive Engine")
+        st.markdown("<p style='color: #475569;'>Dynamic difficulty scaling based on your section performance, mirroring the exact ETS algorithm to ensure realistic score projections.</p>", unsafe_allow_html=True)
+    with col_f2:
+        st.markdown("### ⏱️ Realistic Pacing")
+        st.markdown("<p style='color: #475569;'>Strict CBT (Computer-Based Test) timers, interface constraints, and flow logic designed to build your cognitive stamina for test day.</p>", unsafe_allow_html=True)
+    with col_f3:
+        st.markdown("### 📊 Micro-Analytics")
+        st.markdown("<p style='color: #475569;'>Track topic-level mastery, measure speed-vs-accuracy trade-offs, and eliminate behavioral traps before you sit for the real exam.</p>", unsafe_allow_html=True)
     
-    col1, col2 = st.columns(2)
-    with col1:
+    st.divider()
+
+    # --- CENTERED ACTION BUTTONS ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
         if st.button("🚀 Start Full GRE Simulation", type="primary", use_container_width=True):
             test_data = testing_engine.initialize_test_session("full_length")
             st.session_state["active_test_id"] = test_data["test_id"]
             st.session_state["active_page"] = "Full GRE Simulation"
             st.rerun()
-    with col2:
+        
+        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+        
         if st.button("📊 Open Analytics Dashboard", use_container_width=True):
             st.session_state["active_page"] = "Analytics Dashboard"
             st.rerun()
 
 elif page == "Full GRE Simulation":
     if not st.session_state["active_test_id"]:
-        st.warning("No active exam found. Click below to initialize a test session.")
-        if st.button("Initialize Exam", type="primary"):
-            test_data = testing_engine.initialize_test_session("full_length")
-            st.session_state["active_test_id"] = test_data["test_id"]
-            st.rerun()
+        st.warning("No active exam found. Return home to initialize a new test session.")
     else:
         test_views.render_exam_simulation(st.session_state["active_test_id"])
 
