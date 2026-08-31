@@ -19,6 +19,8 @@ DATABASE_PATH = os.path.join(DATA_DIR, "gre_questions.db")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# These are the in-memory fallback dictionaries.
+# They are dynamically updated via sync_settings_to_globals() on boot!
 SECTION_STRUCTURE = {
     "AW": {"label": "Analytical Writing", "question_count": 1, "time_seconds": 30 * 60, "order": 1, "adaptive": False},
     "VERBAL_1": {"label": "Verbal Reasoning - Section 1", "measure": "Verbal", "question_count": 12, "time_seconds": 18 * 60, "order": 2, "adaptive": False, "determines_next": "VERBAL_2"},
@@ -206,6 +208,65 @@ def db_transaction():
     finally:
         cur.close()
 
+# --- ADMIN SYSTEM SETTINGS & BOOTSTRAPPING ---
+def seed_default_settings():
+    """Seeds the DB with core platform settings if empty."""
+    defaults = {
+        "quant_time_mins": "47",     # Q1 + Q2 (21 + 26)
+        "verbal_time_mins": "41",    # V1 + V2 (18 + 23)
+        "aw_time_mins": "30",
+        "adaptive_threshold_hard": "0.75",
+        "adaptive_threshold_medium": "0.40",
+        "randomize_questions": "true",
+        "maintenance_mode": "false"
+    }
+    with db_transaction() as cur:
+        cur.execute("SELECT COUNT(*) as c FROM system_settings")
+        if cur.fetchone()["c"] == 0:
+            for k, v in defaults.items():
+                cur.execute("INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES (?, ?, 'SYSTEM')", (k, v))
+
+def sync_settings_to_globals():
+    """Reads settings from DB and safely updates memory structures so testing_engine.py doesn't break."""
+    with db_cursor() as cur:
+        cur.execute("SELECT setting_key, setting_value FROM system_settings")
+        rows = cur.fetchall()
+    
+    settings = {r["setting_key"]: r["setting_value"] for r in rows}
+    
+    if "adaptive_threshold_hard" in settings:
+        ADAPTIVE_THRESHOLDS["hard"] = float(settings["adaptive_threshold_hard"])
+    if "adaptive_threshold_medium" in settings:
+        ADAPTIVE_THRESHOLDS["medium"] = float(settings["adaptive_threshold_medium"])
+
+def get_all_settings() -> Dict[str, str]:
+    with db_cursor() as cur:
+        cur.execute("SELECT setting_key, setting_value FROM system_settings")
+        return {r["setting_key"]: r["setting_value"] for r in cur.fetchall()}
+
+def update_settings(updates: Dict[str, str], admin_id: str, reason: str):
+    with db_transaction() as cur:
+        for k, v in updates.items():
+            # Get old value for audit
+            cur.execute("SELECT setting_value FROM system_settings WHERE setting_key = ?", (k,))
+            old_row = cur.fetchone()
+            old_val = old_row["setting_value"] if old_row else None
+            
+            # Upsert
+            cur.execute("""
+                INSERT INTO system_settings (setting_key, setting_value, updated_by, updated_at) 
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
+            """, (k, v, admin_id))
+            
+            # Log Audit
+            log_id = _new_id("LOG")
+            cur.execute(
+                "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (log_id, admin_id, "UPDATED_SETTING", k, old_val, v, reason)
+            )
+    sync_settings_to_globals() # Keep memory fresh
+
 def safe_migrations():
     with db_transaction() as cur:
         cur.execute("PRAGMA table_info(questions);")
@@ -219,6 +280,8 @@ def initialize_database() -> None:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
         safe_migrations()
+        seed_default_settings()
+        sync_settings_to_globals()
     except sqlite3.Error as e:
         conn.rollback()
         raise DatabaseError(f"Failed to initialize schema: {e}")
@@ -373,14 +436,12 @@ def update_question(question_id: str, new_data: Dict[str, Any], admin_id: str, r
     options_json = json.dumps(new_data.get("options")) if new_data.get("options") is not None else None
     
     with db_transaction() as cur:
-        # Save version history
         version_id = _new_id("VER")
         cur.execute(
             "INSERT INTO question_versions (version_id, question_id, previous_data_json, new_data_json, changed_by, reason) VALUES (?, ?, ?, ?, ?, ?)",
             (version_id, question_id, old_json, new_json, admin_id, reason)
         )
         
-        # Update record
         cur.execute(
             """UPDATE questions SET 
                 section = ?, domain = ?, topic = ?, subtopic = ?, question_type = ?, 
@@ -395,7 +456,6 @@ def update_question(question_id: str, new_data: Dict[str, Any], admin_id: str, r
             )
         )
         
-        # Log action
         log_id = _new_id("LOG")
         cur.execute(
             "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, reason) VALUES (?, ?, ?, ?, ?)",
