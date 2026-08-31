@@ -7,113 +7,131 @@ def apply_gre_theme() -> None:
         """
         <style>
         /* =========================================================
-           SAAS DESIGN SYSTEM TOKENS (PHASE 2)
+           PREMIUM SAAS DESIGN SYSTEM 
            ========================================================= */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
         :root {
-            --admin-primary: #2563EB;
-            --admin-primary-hover: #1D4ED8;
-            --admin-success: #059669;
-            --admin-success-bg: #D1FAE5;
-            --admin-warning: #D97706;
-            --admin-warning-bg: #FEF3C7;
-            --admin-danger: #DC2626;
-            --admin-danger-bg: #FEE2E2;
-            --admin-info: #3B82F6;
-            --admin-neutral: #64748B;
-            --admin-neutral-bg: #F1F5F9;
-            
+            --primary: #4F46E5; /* Indigo 600 */
+            --primary-hover: #4338CA;
+            --surface: #FFFFFF;
+            --background: #F8FAFC; /* Slate 50 */
+            --border: #E2E8F0;
             --text-main: #0F172A;
-            --text-muted: #475569;
-            --bg-main: #F8FAFC;
-            --bg-card: #FFFFFF;
-            --border-light: #E2E8F0;
+            --text-muted: #64748B;
+            --success: #10B981;
+            --warning: #F59E0B;
+            --danger: #EF4444;
         }
 
-        /* Base App Overrides */
-        html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { 
-            background-color: var(--bg-main) !important; 
-            color: var(--text-main) !important; 
-            font-family: 'Inter', -apple-system, sans-serif !important; 
-        }
-
-        h1, h2, h3, h4, h5, h6, p, span, div, label, li, strong, small,
-        .stRadio label, .stTextInput label, .stTextArea label, [data-testid="stMarkdownContainer"] p {
+        /* Global Typography & Background */
+        html, body, [class*="css"] {
+            font-family: 'Inter', sans-serif !important;
+            background-color: var(--background) !important;
             color: var(--text-main) !important;
         }
 
-        /* CBT Metric Card (Student Facing) */
-        .metric-card-box {
-            background-color: var(--bg-card) !important;
-            border: 1px solid var(--border-light) !important;
-            border-left: 5px solid var(--admin-primary) !important;
-            padding: 16px 20px !important;
-            border-radius: 8px !important;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02) !important;
-            margin-bottom: 12px !important;
-        }
-        .metric-card-label {
-            font-size: 12px !important;
-            font-weight: 700 !important;
-            color: var(--text-muted) !important;
-            text-transform: uppercase !important;
-            letter-spacing: 0.05em !important;
-        }
-        .metric-card-value {
-            font-size: 28px !important;
-            font-weight: 800 !important;
-            color: var(--text-main) !important;
-            margin-top: 4px !important;
+        /* Top Header Cleanup */
+        header[data-testid="stHeader"] {
+            background-color: rgba(248, 250, 252, 0.8) !important;
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
         }
 
-        /* Sidebar Styling */
-        [data-testid="stSidebar"] {
-            background-color: var(--bg-card) !important;
-            border-right: 1px solid var(--border-light) !important;
+        /* Sidebar - Sleek Dark Mode */
+        section[data-testid="stSidebar"] {
+            background-color: #0F172A !important; /* Slate 900 */
+            border-right: 1px solid #1E293B !important;
+        }
+        section[data-testid="stSidebar"] * {
+            color: #F8FAFC !important;
+        }
+        
+        /* Premium Cards */
+        .saas-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+            margin-bottom: 1rem;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .saas-card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+        }
+        
+        /* Dashboard Metrics */
+        .metric-value {
+            font-size: 2.25rem;
+            font-weight: 800;
+            color: var(--primary);
+            line-height: 1.2;
+            margin-top: 8px;
+        }
+        .metric-label {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
 
-        /* Button Enhancements */
+        /* Streamlit Widget Overrides for Premium Feel */
         .stButton > button {
-            border-radius: 6px !important;
+            border-radius: 8px !important;
             font-weight: 600 !important;
-            background-color: var(--bg-card) !important;
-            color: var(--text-main) !important;
-            border: 1px solid var(--border-light) !important;
-            transition: all 0.2s ease;
-        }
-        .stButton > button:hover {
-            border-color: var(--admin-neutral) !important;
+            padding: 0.5rem 1rem !important;
+            border: 1px solid var(--border) !important;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+            transition: all 0.2s !important;
         }
         .stButton > button[kind="primary"] {
-            background-color: var(--admin-primary) !important;
-            color: #FFFFFF !important;
+            background-color: var(--primary) !important;
+            color: white !important;
             border: none !important;
         }
         .stButton > button[kind="primary"]:hover {
-            background-color: var(--admin-primary-hover) !important;
-        }
-
-        /* Danger Zone Styles */
-        .danger-zone {
-            border: 1px solid var(--admin-danger);
-            border-radius: 8px;
-            padding: 20px;
-            background-color: var(--admin-danger-bg);
-            margin-top: 20px;
+            background-color: var(--primary-hover) !important;
+            transform: translateY(-1px);
         }
         
-        /* Status Badges */
+        /* Settings Inputs */
+        .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
+            border-radius: 8px !important;
+            border: 1px solid var(--border) !important;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+        }
+
+        /* DataFrames / Tables */
+        [data-testid="stDataFrame"] {
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        /* Badges */
         .badge {
-            padding: 4px 10px;
-            border-radius: 999px;
+            padding: 4px 12px;
+            border-radius: 9999px;
             font-size: 0.75rem;
-            font-weight: 700;
-            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.025em;
             display: inline-block;
         }
-        .badge-success { background-color: var(--admin-success-bg); color: var(--admin-success); }
-        .badge-warning { background-color: var(--admin-warning-bg); color: var(--admin-warning); }
-        .badge-danger { background-color: var(--admin-danger-bg); color: var(--admin-danger); }
-        .badge-neutral { background-color: var(--admin-neutral-bg); color: var(--admin-neutral); }
+        .badge-success { background: #D1FAE5; color: #065F46; }
+        .badge-warning { background: #FEF3C7; color: #92400E; }
+        .badge-danger { background: #FEE2E2; color: #991B1B; }
+        .badge-neutral { background: #F1F5F9; color: #475569; }
+        
+        /* Danger Zone */
+        .danger-zone {
+            border: 1px solid #F87171;
+            background-color: #FEF2F2;
+            border-radius: 12px;
+            padding: 24px;
+            margin-top: 32px;
+        }
         </style>
         """,
         unsafe_allow_html=True
@@ -122,67 +140,49 @@ def apply_gre_theme() -> None:
 def render_score_card(label: str, value: str, subtext: Optional[str] = None) -> None:
     st.markdown(
         f"""
-        <div class="metric-card-box">
-            <div class="metric-card-label">{label}</div>
-            <div class="metric-card-value">{value}</div>
-            {f'<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">{subtext}</div>' if subtext else ''}
+        <div class="saas-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            {f'<div style="font-size:0.875rem; color:var(--text-muted); margin-top:8px; font-weight:500;">{subtext}</div>' if subtext else ''}
         </div>
         """,
         unsafe_allow_html=True
     )
 
 def status_badge(status: str) -> str:
-    """Returns an HTML string for a semantic status badge."""
     s = status.upper()
-    if s in ["APPROVED", "HEALTHY", "ACTIVE", "OPERATIONAL", "ON"]:
-        css_class = "badge-success"
-    elif s in ["PENDING_REVIEW", "WARNING", "DRAFT", "PENDING"]:
-        css_class = "badge-warning"
-    elif s in ["FAILED", "ERROR", "DISABLED", "ARCHIVED", "OFF"]:
-        css_class = "badge-danger"
-    else:
-        css_class = "badge-neutral"
-    
+    css_class = "badge-success" if s in ["APPROVED", "HEALTHY", "ACTIVE", "ON"] else \
+                "badge-warning" if s in ["PENDING_REVIEW", "WARNING", "DRAFT"] else \
+                "badge-danger" if s in ["FAILED", "ERROR", "DISABLED", "ARCHIVED", "OFF"] else "badge-neutral"
     return f'<span class="badge {css_class}">{s}</span>'
 
 def render_setting_row(title: str, description: str):
-    """Renders the standard SaaS setting title and description for column layouts."""
     st.markdown(
         f"""
-        <div style="margin-bottom: 8px;">
-            <strong style="font-size: 1.05rem; color: var(--text-main);">{title}</strong><br>
-            <span style="font-size: 0.85rem; color: var(--text-muted);">{description}</span>
+        <div style="margin-bottom: 4px;">
+            <div style="font-size: 1rem; font-weight: 600; color: var(--text-main);">{title}</div>
+            <div style="font-size: 0.875rem; color: var(--text-muted); line-height: 1.4;">{description}</div>
         </div>
-        """, 
-        unsafe_allow_html=True
+        """, unsafe_allow_html=True
     )
 
 def render_danger_zone(title: str, description: str):
-    """Renders a visually distinct danger zone container."""
     st.markdown(
         f"""
         <div class="danger-zone">
-            <strong style="color: var(--admin-danger); font-size: 1.1rem;">⚠️ {title}</strong>
-            <p style="color: #7F1D1D; font-size: 0.9rem; margin-top: 4px; margin-bottom: 0;">{description}</p>
+            <h4 style="color: #991B1B; margin: 0 0 8px 0; font-weight: 700;">⚠️ {title}</h4>
+            <p style="color: #991B1B; margin: 0; font-size: 0.9rem;">{description}</p>
         </div>
-        """,
-        unsafe_allow_html=True
+        """, unsafe_allow_html=True
     )
 
 def render_cbt_header(section_name: str, section_instance_id: str, duration_seconds: int) -> Dict[str, Any]:
     time_status = timer.get_section_time_status(section_instance_id, duration_seconds)
     col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        st.markdown(f"### 📝 {section_name.replace('_', ' ').title()}")
-    with col2:
-        st.markdown(f"**Status:** `{time_status['status'].upper()}`")
+    with col1: st.markdown(f"### 📝 {section_name.replace('_', ' ').title()}")
+    with col2: st.markdown(f"**Status:** `{time_status['status'].upper()}`")
     with col3:
-        timer_color = "#DC2626" if time_status['remaining_seconds'] < 300 else "#2563EB"
-        st.markdown(
-            f"<div style='font-size: 24px; font-weight: 800; color: {timer_color} !important; text-align: right;'>"
-            f"⏱️ {time_status['formatted_time']}</div>",
-            unsafe_allow_html=True
-        )
+        timer_color = "#DC2626" if time_status['remaining_seconds'] < 300 else "#4F46E5"
+        st.markdown(f"<div style='font-size: 24px; font-weight: 800; color: {timer_color} !important; text-align: right;'>⏱️ {time_status['formatted_time']}</div>", unsafe_allow_html=True)
     st.divider()
     return time_status
