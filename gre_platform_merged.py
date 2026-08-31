@@ -4,6 +4,8 @@ import json
 import uuid
 import time
 import logging
+import hashlib
+import secrets
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Sequence
@@ -35,6 +37,7 @@ QUESTION_SOURCE_TAG = "AI-Generated Practice (GRE Engine v1.0)"
 SCHEMA_SQL = r"""
 PRAGMA foreign_keys = ON;
 
+-- [EXISTING TABLES] --
 CREATE TABLE IF NOT EXISTS questions (
     question_id TEXT PRIMARY KEY,
     section TEXT NOT NULL,
@@ -110,6 +113,48 @@ CREATE TABLE IF NOT EXISTS user_performance (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, topic, subtopic)
 );
+
+-- [NEW SECURITY & ADMIN TABLES] --
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password_hash BLOB NOT NULL,
+    salt BLOB NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('STUDENT', 'ADMIN', 'SUPER_ADMIN')),
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+    log_id TEXT PRIMARY KEY,
+    admin_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_object TEXT NOT NULL,
+    old_value TEXT,
+    new_value TEXT,
+    reason TEXT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (admin_id) REFERENCES users(user_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS question_versions (
+    version_id TEXT PRIMARY KEY,
+    question_id TEXT NOT NULL,
+    previous_data_json TEXT NOT NULL,
+    new_data_json TEXT NOT NULL,
+    changed_by TEXT NOT NULL,
+    reason TEXT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (question_id) REFERENCES questions(question_id) ON DELETE CASCADE
+);
 """
 
 # ==============================================================================
@@ -121,7 +166,6 @@ logger = logging.getLogger("db_manager")
 class DatabaseError(Exception):
     pass
 
-# Global connection pool (persistent across reruns on the Streamlit worker)
 _global_conn = None
 
 def get_connection() -> sqlite3.Connection:
@@ -163,17 +207,29 @@ def db_transaction():
     finally:
         cur.close()
 
+# --- MIGRATION & INIT LOGIC ---
+def safe_migrations():
+    """Safely apply schema updates without dropping existing data."""
+    with db_transaction() as cur:
+        # Add 'status' column to questions if it doesn't exist
+        cur.execute("PRAGMA table_info(questions);")
+        columns = [row["name"] for row in cur.fetchall()]
+        if "status" not in columns:
+            logger.info("Migrating schema: Adding 'status' to questions.")
+            cur.execute("ALTER TABLE questions ADD COLUMN status TEXT NOT NULL DEFAULT 'APPROVED';")
+
 def initialize_database() -> None:
     conn = get_connection()
     try:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
+        safe_migrations() # Run non-destructive alterations
     except sqlite3.Error as e:
         conn.rollback()
         raise DatabaseError(f"Failed to initialize schema: {e}")
 
 def verify_schema() -> Dict[str, bool]:
-    required_tables = ["questions", "tests", "test_responses", "error_log", "user_performance", "session_sections"]
+    required_tables = ["questions", "tests", "users", "admin_audit_logs", "system_settings", "question_versions"]
     try:
         with db_cursor() as cur:
             cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
@@ -185,18 +241,61 @@ def verify_schema() -> Dict[str, bool]:
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
+# --- AUTHENTICATION MODULE ---
+def hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return pwd_hash, salt
+
+def create_user(username: str, email: str, password: str, role: str = "STUDENT") -> str:
+    user_id = _new_id("USR")
+    pwd_hash, salt = hash_password(password)
+    try:
+        with db_cursor(commit=True) as cur:
+            cur.execute(
+                "INSERT INTO users (user_id, username, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, username, email, pwd_hash, salt, role)
+            )
+        return user_id
+    except sqlite3.IntegrityError:
+        raise ValueError("Username or email already exists.")
+
+def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
+    with db_cursor() as cur:
+        cur.execute("SELECT user_id, username, role, password_hash, salt, is_active FROM users WHERE username = ?", (username,))
+        user = cur.fetchone()
+        if not user or not user["is_active"]:
+            return None
+        
+        test_hash, _ = hash_password(password, user["salt"])
+        if test_hash == user["password_hash"]:
+            return {"user_id": user["user_id"], "username": user["username"], "role": user["role"]}
+        return None
+
+# --- ADMIN AUDIT MODULE ---
+def log_admin_action(admin_id: str, action: str, target_object: str, old_val: str = None, new_val: str = None, reason: str = None):
+    log_id = _new_id("LOG")
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (log_id, admin_id, action, target_object, old_val, new_val, reason)
+        )
+
+# --- QUESTION MODULE ---
 def insert_question(q: Dict[str, Any]) -> str:
     options_json = json.dumps(q.get("options")) if q.get("options") is not None else None
+    status = q.get("status", "APPROVED") # Safely handle new status field
     try:
         with db_cursor(commit=True) as cur:
             cur.execute(
                 """INSERT INTO questions (
                     question_id, section, domain, topic, subtopic, question_type,
-                    difficulty_level, question_text, options_json, correct_answer, explanation, estimated_time_seconds, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    difficulty_level, question_text, options_json, correct_answer, explanation, estimated_time_seconds, source, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     q["question_id"], q["section"], q["domain"], q["topic"], q.get("subtopic"), q["question_type"], int(q["difficulty_level"]),
-                    q["question_text"], options_json, q["correct_answer"], q["explanation"], int(q.get("estimated_time_seconds", 90)), q.get("source", QUESTION_SOURCE_TAG)
+                    q["question_text"], options_json, q["correct_answer"], q["explanation"], int(q.get("estimated_time_seconds", 90)), q.get("source", QUESTION_SOURCE_TAG), status
                 )
             )
     except DatabaseError as e:
@@ -215,10 +314,10 @@ def get_question_by_id(question_id: str) -> Optional[Dict[str, Any]]:
     result["options"] = json.loads(result["options_json"]) if result["options_json"] else None
     return result
 
-def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Optional[Sequence[int]] = None, exclude_ids: Optional[Sequence[str]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Optional[Sequence[int]] = None, exclude_ids: Optional[Sequence[str]] = None, limit: Optional[int] = None, status: str = 'APPROVED') -> List[Dict[str, Any]]:
     if limit == 0: return []
-    clauses = []
-    params = []
+    clauses = ["status = ?"]
+    params = [status]
     if section:
         clauses.append("section = ?")
         params.append(section)
@@ -231,7 +330,7 @@ def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Opt
         clauses.append(f"question_id NOT IN ({placeholders})")
         params.extend(exclude_ids)
 
-    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    where_sql = f"WHERE {' AND '.join(clauses)}"
     query = f"SELECT * FROM questions {where_sql} ORDER BY RANDOM()"
     if limit is not None:
         query += " LIMIT ?"
@@ -250,9 +349,10 @@ def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Opt
 
 def count_questions() -> int:
     with db_cursor() as cur:
-        cur.execute("SELECT COUNT(*) as c FROM questions")
+        cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
         return cur.fetchone()["c"]
 
+# --- CBT TEST ENGINE MODULE ---
 def create_test(test_type: str) -> str:
     test_id = _new_id("TEST")
     with db_cursor(commit=True) as cur:
