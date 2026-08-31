@@ -5,10 +5,9 @@ import gre_platform_merged as db_manager
 from ui import components
 
 def render_analytics_dashboard() -> None:
-    st.header("📊 Performance & Analytics Dashboard")
-    st.markdown("Track your GRE mastery, identify weak points, and monitor your pacing.")
+    st.title("📈 Performance Analytics & Mastery Hub")
+    st.caption("Real-time telemetry on accuracy, timing efficiency, and domain-level weaknesses.")
 
-    # Fetch data efficiently in one block
     with db_manager.db_cursor() as cur:
         cur.execute("SELECT COUNT(*) as c FROM tests WHERE status = 'completed'")
         completed_tests = cur.fetchone()["c"]
@@ -18,73 +17,66 @@ def render_analytics_dashboard() -> None:
             FROM user_performance 
             ORDER BY accuracy_pct ASC
         """)
-        perf_data = cur.fetchall()
+        perf_data = [dict(r) for r in cur.fetchall()]
 
-    # Top Level Metric Cards
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        components.render_score_card("Completed Exams", str(completed_tests), "Full & Section Tests")
-    with c2:
-        components.render_score_card("Topics Tracked", str(len(perf_data)), "Across Quant & Verbal")
-    with c3:
-        overall_acc = sum(r['accuracy_pct'] for r in perf_data) / len(perf_data) if perf_data else 0
-        components.render_score_card("Overall Accuracy", f"{overall_acc:.1f}%", "All Time")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        components.render_score_card("Completed Exams", str(completed_tests), "Full & Section Drills")
+    with m2:
+        components.render_score_card("Topics Tracked", str(len(perf_data)), "Quant & Verbal Domains")
+    with m3:
+        avg_acc = (sum(r['accuracy_pct'] for r in perf_data) / len(perf_data)) if perf_data else 0.0
+        components.render_score_card("Overall Accuracy", f"{avg_acc:.1f}%", "Historical Average")
+    with m4:
+        avg_speed = (sum(r['avg_speed_seconds'] for r in perf_data if r['avg_speed_seconds']) / len(perf_data)) if perf_data else 0.0
+        components.render_score_card("Pacing Avg", f"{int(avg_speed)}s", "Target: <90s per Q")
 
     st.divider()
 
     if not perf_data:
-        st.info("💡 Complete a practice test to unlock deep analytics, interactive charts, and weakness tracking.")
+        st.info("💡 **No diagnostic data recorded yet.** Complete practice questions or full simulations to populate metrics.")
         return
 
-    # Convert to Pandas DataFrame for advanced visualization
-    df = pd.DataFrame([dict(r) for r in perf_data])
-    
-    # Fill any missing mastery ratings safely
-    if 'mastery_rating' not in df.columns or df['mastery_rating'].isnull().all():
-        df['mastery_rating'] = 'weak'
-    else:
-        df['mastery_rating'] = df['mastery_rating'].fillna('weak')
+    df = pd.DataFrame(perf_data)
+    df['mastery_rating'] = df['mastery_rating'].fillna('weak')
 
-    # 1. Interactive Bar Chart
-    st.subheader("🎯 Accuracy by Topic")
-    fig = px.bar(
-        df, 
-        x='topic', 
-        y='accuracy_pct', 
-        color='mastery_rating',
-        color_discrete_map={
-            "weak": "#dc3545",        # Red
-            "developing": "#ffc107",  # Yellow
-            "proficient": "#17a2b8",  # Blue
-            "mastered": "#28a745"     # Green
-        },
-        labels={'topic': 'GRE Topic', 'accuracy_pct': 'Accuracy (%)', 'mastery_rating': 'Mastery Level'},
-        height=400
-    )
-    fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig, use_container_width=True)
+    col_chart, col_matrix = st.columns([1.2, 1])
 
-    # 2. Advanced Data Table with Visual Progress Bars
-    st.subheader("🚨 Critical Weaknesses Matrix")
-    weak_df = df[df['accuracy_pct'] < 80].sort_values('accuracy_pct')
-    
-    if not weak_df.empty:
+    with col_chart:
+        st.subheader("🎯 Topic Performance Breakdown")
+        fig = px.bar(
+            df,
+            x='topic',
+            y='accuracy_pct',
+            color='mastery_rating',
+            color_discrete_map={
+                "weak": "#EF4444",
+                "developing": "#F59E0B",
+                "proficient": "#3B82F6",
+                "mastered": "#10B981"
+            },
+            labels={'topic': 'GRE Subtopic', 'accuracy_pct': 'Accuracy (%)', 'mastery_rating': 'Status'},
+            height=380
+        )
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#0F172A"),
+            margin=dict(l=10, r=10, t=20, b=10)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_matrix:
+        st.subheader("🚨 Focus Area Priority List")
+        weak_df = df.sort_values('accuracy_pct')
         st.dataframe(
             weak_df[['topic', 'accuracy_pct', 'total_attempts', 'avg_speed_seconds']],
             column_config={
-                "topic": st.column_config.TextColumn("Topic", width="medium"),
-                "accuracy_pct": st.column_config.ProgressColumn(
-                    "Accuracy", 
-                    help="Target: 80%+", 
-                    format="%.1f%%", 
-                    min_value=0, 
-                    max_value=100
-                ),
-                "total_attempts": st.column_config.NumberColumn("Questions Attempted", alignment="center"),
-                "avg_speed_seconds": st.column_config.NumberColumn("Avg Time (sec)", format="%d s", alignment="center")
+                "topic": "Topic Name",
+                "accuracy_pct": st.column_config.ProgressColumn("Accuracy", format="%.1f%%", min_value=0, max_value=100),
+                "total_attempts": st.column_config.NumberColumn("Attempts"),
+                "avg_speed_seconds": st.column_config.NumberColumn("Avg Speed", format="%ds")
             },
             hide_index=True,
             use_container_width=True
         )
-    else:
-        st.success("🎉 Great job! You have no topics currently below 80% accuracy.")
