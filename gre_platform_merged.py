@@ -1,132 +1,452 @@
-import streamlit as st
+import os
+import sqlite3
+import json
+import uuid
 import time
-import gre_platform_merged as db_manager
+import logging
+import hashlib
+import secrets
+from contextlib import contextmanager
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Sequence
 
-def render_question_bank():
-    st.title("🛠️ Question Bank Management")
-    st.caption("Content Lifecycle, Versioning, and Approvals")
+# ==============================================================================
+# ============================  CONFIG SECTION  ===============================
+# ==============================================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DATABASE_PATH = os.path.join(DATA_DIR, "gre_questions.db")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+SECTION_STRUCTURE = {
+    "AW": {"label": "Analytical Writing", "question_count": 1, "time_seconds": 30 * 60, "order": 1, "adaptive": False},
+    "VERBAL_1": {"label": "Verbal Reasoning - Section 1", "measure": "Verbal", "question_count": 12, "time_seconds": 18 * 60, "order": 2, "adaptive": False, "determines_next": "VERBAL_2"},
+    "VERBAL_2": {"label": "Verbal Reasoning - Section 2", "measure": "Verbal", "question_count": 15, "time_seconds": 23 * 60, "order": 3, "adaptive": True, "determined_by": "VERBAL_1"},
+    "QUANT_1": {"label": "Quantitative Reasoning - Section 1", "measure": "Quant", "question_count": 12, "time_seconds": 21 * 60, "order": 4, "adaptive": False, "determines_next": "QUANT_2"},
+    "QUANT_2": {"label": "Quantitative Reasoning - Section 2", "measure": "Quant", "question_count": 15, "time_seconds": 26 * 60, "order": 5, "adaptive": True, "determined_by": "QUANT_1"},
+}
+
+ADAPTIVE_THRESHOLDS = {"hard": 0.75, "medium": 0.40}
+VALID_MODES = ["exam_simulation", "practice"]
+QUESTION_SOURCE_TAG = "AI-Generated Practice (GRE Engine v1.0)"
+
+# ==============================================================================
+# ============================  SCHEMA SECTION  ===============================
+# ==============================================================================
+SCHEMA_SQL = r"""
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS questions (
+    question_id TEXT PRIMARY KEY,
+    section TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    subtopic TEXT,
+    question_type TEXT NOT NULL,
+    difficulty_level INTEGER NOT NULL,
+    question_text TEXT NOT NULL,
+    options_json TEXT,
+    correct_answer TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    estimated_time_seconds INTEGER NOT NULL DEFAULT 90,
+    source TEXT NOT NULL DEFAULT 'AI-Generated Practice',
+    status TEXT NOT NULL DEFAULT 'APPROVED',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tests (
+    test_id TEXT PRIMARY KEY,
+    test_type TEXT NOT NULL,
+    start_timestamp TIMESTAMP,
+    end_timestamp TIMESTAMP,
+    total_score INTEGER,
+    quant_score INTEGER,
+    verbal_score INTEGER,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS session_sections (
+    section_instance_id TEXT PRIMARY KEY,
+    test_id TEXT NOT NULL,
+    section_key TEXT NOT NULL,
+    difficulty_tier TEXT,
+    time_allotted_seconds INTEGER NOT NULL,
+    section_start_timestamp REAL,
+    section_end_timestamp REAL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    FOREIGN KEY (test_id) REFERENCES tests(test_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS test_responses (
+    response_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    test_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    section_instance_id TEXT,
+    user_answer TEXT,
+    correct_answer TEXT NOT NULL,
+    result TEXT NOT NULL,
+    time_spent_seconds INTEGER NOT NULL DEFAULT 0,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (test_id) REFERENCES tests(test_id) ON DELETE CASCADE,
+    FOREIGN KEY (question_id) REFERENCES questions(question_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS error_log (
+    error_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id TEXT NOT NULL,
+    error_category TEXT NOT NULL,
+    user_notes TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_performance (
+    user_id TEXT NOT NULL DEFAULT 'default_user',
+    topic TEXT NOT NULL,
+    subtopic TEXT NOT NULL DEFAULT '',
+    total_attempts INTEGER NOT NULL DEFAULT 0,
+    correct_attempts INTEGER NOT NULL DEFAULT 0,
+    accuracy_pct REAL NOT NULL DEFAULT 0.0,
+    avg_speed_seconds REAL,
+    mastery_rating TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic, subtopic)
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password_hash BLOB NOT NULL,
+    salt BLOB NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('STUDENT', 'ADMIN', 'SUPER_ADMIN')),
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+    log_id TEXT PRIMARY KEY,
+    admin_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_object TEXT NOT NULL,
+    old_value TEXT,
+    new_value TEXT,
+    reason TEXT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (admin_id) REFERENCES users(user_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS question_versions (
+    version_id TEXT PRIMARY KEY,
+    question_id TEXT NOT NULL,
+    previous_data_json TEXT NOT NULL,
+    new_data_json TEXT NOT NULL,
+    changed_by TEXT NOT NULL,
+    reason TEXT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (question_id) REFERENCES questions(question_id) ON DELETE CASCADE
+);
+"""
+
+# ==============================================================================
+# ==========================  DB MANAGER SECTION  =============================
+# ==============================================================================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("db_manager")
+
+class DatabaseError(Exception):
+    pass
+
+_global_conn = None
+
+def get_connection() -> sqlite3.Connection:
+    global _global_conn
+    if _global_conn is None:
+        _global_conn = sqlite3.connect(DATABASE_PATH, timeout=20, check_same_thread=False)
+        _global_conn.row_factory = sqlite3.Row
+        _global_conn.execute("PRAGMA foreign_keys = ON;")
+        _global_conn.execute("PRAGMA journal_mode = WAL;") 
+        _global_conn.execute("PRAGMA synchronous = NORMAL;") 
+        _global_conn.execute("PRAGMA temp_store = MEMORY;") 
+        _global_conn.execute("PRAGMA busy_timeout = 10000;")
+    return _global_conn
+
+@contextmanager
+def db_cursor(commit: bool = False):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        yield cur
+        if commit:
+            conn.commit()
+    except sqlite3.Error as e:
+        conn.rollback()
+        raise DatabaseError(f"Database operation failed: {e}") from e
+    finally:
+        cur.close() 
+
+@contextmanager
+def db_transaction():
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        yield cur
+        conn.commit()
+    except sqlite3.Error as e:
+        conn.rollback()
+        raise DatabaseError(f"Transaction failed and was rolled back: {e}") from e
+    finally:
+        cur.close()
+
+def safe_migrations():
+    with db_transaction() as cur:
+        cur.execute("PRAGMA table_info(questions);")
+        columns = [row["name"] for row in cur.fetchall()]
+        if "status" not in columns:
+            cur.execute("ALTER TABLE questions ADD COLUMN status TEXT NOT NULL DEFAULT 'APPROVED';")
+
+def initialize_database() -> None:
+    conn = get_connection()
+    try:
+        conn.executescript(SCHEMA_SQL)
+        conn.commit()
+        safe_migrations()
+    except sqlite3.Error as e:
+        conn.rollback()
+        raise DatabaseError(f"Failed to initialize schema: {e}")
+
+def verify_schema() -> Dict[str, bool]:
+    required_tables = ["questions", "tests", "users", "admin_audit_logs", "system_settings", "question_versions"]
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            existing = {row["name"] for row in cur.fetchall()}
+        return {t: (t in existing) for t in required_tables}
+    except DatabaseError:
+        return {t: False for t in required_tables}
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+# --- AUTHENTICATION MODULE ---
+def hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return pwd_hash, salt
+
+def create_user(username: str, email: str, password: str, role: str = "STUDENT") -> str:
+    user_id = _new_id("USR")
+    pwd_hash, salt = hash_password(password)
+    try:
+        with db_cursor(commit=True) as cur:
+            cur.execute(
+                "INSERT INTO users (user_id, username, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, username, email, pwd_hash, salt, role)
+            )
+        return user_id
+    except sqlite3.IntegrityError:
+        raise ValueError("Username or email already exists.")
+
+def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
+    with db_cursor() as cur:
+        cur.execute("SELECT user_id, username, role, password_hash, salt, is_active FROM users WHERE username = ?", (username,))
+        user = cur.fetchone()
+        if not user or not user["is_active"]:
+            return None
+        
+        test_hash, _ = hash_password(password, user["salt"])
+        if test_hash == user["password_hash"]:
+            return {"user_id": user["user_id"], "username": user["username"], "role": user["role"]}
+        return None
+
+def log_admin_action(admin_id: str, action: str, target_object: str, old_val: str = None, new_val: str = None, reason: str = None):
+    log_id = _new_id("LOG")
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (log_id, admin_id, action, target_object, old_val, new_val, reason)
+        )
+
+# --- QUESTION MODULE ---
+def insert_question(q: Dict[str, Any]) -> str:
+    options_json = json.dumps(q.get("options")) if q.get("options") is not None else None
+    status = q.get("status", "APPROVED")
+    try:
+        with db_cursor(commit=True) as cur:
+            cur.execute(
+                """INSERT INTO questions (
+                    question_id, section, domain, topic, subtopic, question_type,
+                    difficulty_level, question_text, options_json, correct_answer, explanation, estimated_time_seconds, source, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    q["question_id"], q["section"], q["domain"], q["topic"], q.get("subtopic"), q["question_type"], int(q["difficulty_level"]),
+                    q["question_text"], options_json, q["correct_answer"], q["explanation"], int(q.get("estimated_time_seconds", 90)), q.get("source", QUESTION_SOURCE_TAG), status
+                )
+            )
+    except DatabaseError as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise DatabaseError(f"Question ID '{q['question_id']}' already exists.")
+        raise
+    return q["question_id"]
+
+def get_question_by_id(question_id: str) -> Optional[Dict[str, Any]]:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM questions WHERE question_id = ?", (question_id,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result["options"] = json.loads(result["options_json"]) if result["options_json"] else None
+    return result
+
+def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Optional[Sequence[int]] = None, exclude_ids: Optional[Sequence[str]] = None, limit: Optional[int] = None, status: str = 'APPROVED') -> List[Dict[str, Any]]:
+    if limit == 0: return []
+    clauses = ["status = ?"]
+    params = [status]
+    if section:
+        clauses.append("section = ?")
+        params.append(section)
+    if difficulty_levels:
+        placeholders = ",".join("?" * len(difficulty_levels))
+        clauses.append(f"difficulty_level IN ({placeholders})")
+        params.extend(difficulty_levels)
+    if exclude_ids:
+        placeholders = ",".join("?" * len(exclude_ids))
+        clauses.append(f"question_id NOT IN ({placeholders})")
+        params.extend(exclude_ids)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}"
+    query = f"SELECT * FROM questions {where_sql} ORDER BY RANDOM()"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(int(limit))
+
+    with db_cursor() as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+    results = []
+    for row in rows:
+        d = dict(row)
+        d["options"] = json.loads(d["options_json"]) if d["options_json"] else None
+        results.append(d)
+    return results
+
+def get_all_questions_admin(section_filter: str = "All", status_filter: str = "All") -> List[Dict[str, Any]]:
+    query = "SELECT * FROM questions WHERE 1=1"
+    params = []
+    if section_filter != "All":
+        query += " AND section = ?"
+        params.append(section_filter)
+    if status_filter != "All":
+        query += " AND status = ?"
+        params.append(status_filter)
+    query += " ORDER BY created_at DESC"
     
-    admin_id = st.session_state.get("user_id", "system")
+    with db_cursor() as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        
+    results = []
+    for row in rows:
+        d = dict(row)
+        d["options"] = json.loads(d["options_json"]) if d["options_json"] else None
+        results.append(d)
+    return results
+
+def update_question(question_id: str, new_data: Dict[str, Any], admin_id: str, reason: str) -> None:
+    old_q = get_question_by_id(question_id)
+    if not old_q:
+        raise ValueError("Question not found")
+        
+    old_json = json.dumps(old_q)
+    new_json = json.dumps(new_data)
+    options_json = json.dumps(new_data.get("options")) if new_data.get("options") is not None else None
     
-    # Init routing state
-    if "admin_q_mode" not in st.session_state:
-        st.session_state["admin_q_mode"] = "list"
-    if "admin_q_target" not in st.session_state:
-        st.session_state["admin_q_target"] = None
+    with db_transaction() as cur:
+        # Save version history
+        version_id = _new_id("VER")
+        cur.execute(
+            "INSERT INTO question_versions (version_id, question_id, previous_data_json, new_data_json, changed_by, reason) VALUES (?, ?, ?, ?, ?, ?)",
+            (version_id, question_id, old_json, new_json, admin_id, reason)
+        )
         
-    if st.session_state["admin_q_mode"] == "list":
-        st.markdown("### Filter & Search")
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1:
-            sec_filter = st.selectbox("Filter Section", ["All", "Quantitative Reasoning", "Verbal Reasoning", "Analytical Writing"])
-        with c2:
-            stat_filter = st.selectbox("Filter Status", ["All", "DRAFT", "PENDING_REVIEW", "APPROVED", "ARCHIVED"])
-        with c3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("➕ New Draft", type="primary", use_container_width=True):
-                st.session_state["admin_q_mode"] = "create"
-                st.rerun()
-                
-        questions = db_manager.get_all_questions_admin(sec_filter, stat_filter)
+        # Update record
+        cur.execute(
+            """UPDATE questions SET 
+                section = ?, domain = ?, topic = ?, subtopic = ?, question_type = ?, 
+                difficulty_level = ?, question_text = ?, options_json = ?, correct_answer = ?, 
+                explanation = ?, estimated_time_seconds = ?, status = ?
+               WHERE question_id = ?""",
+            (
+                new_data["section"], new_data["domain"], new_data["topic"], new_data.get("subtopic"),
+                new_data["question_type"], int(new_data["difficulty_level"]), new_data["question_text"],
+                options_json, new_data["correct_answer"], new_data["explanation"], 
+                int(new_data.get("estimated_time_seconds", 90)), new_data["status"], question_id
+            )
+        )
         
-        if not questions:
-            st.info("No questions found matching criteria.")
-            return
-            
-        st.markdown(f"**Showing {len(questions)} items**")
-        for q in questions:
-            status_color = "green" if q['status'] == "APPROVED" else "orange" if q['status'] == "PENDING_REVIEW" else "gray"
-            with st.expander(f"[{q['status']}] {q['question_id']} - {q['domain']} ({q['topic']})"):
-                st.markdown(f"*{q['question_text'][:120]}...*")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("✏️ Edit / Review Lifecycle", key=f"edit_{q['question_id']}"):
-                        st.session_state["admin_q_mode"] = "edit"
-                        st.session_state["admin_q_target"] = q['question_id']
-                        st.rerun()
-                with col2:
-                    if q['status'] == "ARCHIVED":
-                        st.warning("Archived. Edit to restore to DRAFT.")
-                        
-    elif st.session_state["admin_q_mode"] in ["edit", "create"]:
-        mode = st.session_state["admin_q_mode"]
-        q_id = st.session_state.get("admin_q_target")
-        
-        if st.button("⬅️ Back to Bank"):
-            st.session_state["admin_q_mode"] = "list"
-            st.rerun()
-            
-        st.divider()
-        
-        if mode == "edit":
-            q_data = db_manager.get_question_by_id(q_id)
-            st.subheader(f"Editing Question: {q_id}")
-        else:
-            q_data = {
-                "question_id": f"Q-NEW-{db_manager._new_id('')[:6]}",
-                "section": "Quantitative Reasoning",
-                "domain": "", "topic": "", "subtopic": "",
-                "question_type": "Multiple Choice",
-                "difficulty_level": 3, "question_text": "",
-                "options": ["A", "B", "C", "D"],
-                "correct_answer": "", "explanation": "",
-                "estimated_time_seconds": 90, "status": "DRAFT"
-            }
-            st.subheader("Creating New Draft Question")
-            
-        with st.form("q_edit_form"):
-            new_status = st.selectbox("Lifecycle Status", ["DRAFT", "PENDING_REVIEW", "APPROVED", "ARCHIVED"], index=["DRAFT", "PENDING_REVIEW", "APPROVED", "ARCHIVED"].index(q_data["status"]))
-            
-            c1, c2 = st.columns(2)
-            section = c1.selectbox("Section", ["Quantitative Reasoning", "Verbal Reasoning", "Analytical Writing"], index=["Quantitative Reasoning", "Verbal Reasoning", "Analytical Writing"].index(q_data["section"]))
-            q_type = c2.selectbox("Type", ["Multiple Choice", "Numeric Entry", "Quantitative Comparison", "Issue Task"], index=["Multiple Choice", "Numeric Entry", "Quantitative Comparison", "Issue Task"].index(q_data.get("question_type", "Multiple Choice")))
-            
-            c3, c4, c5 = st.columns(3)
-            domain = c3.text_input("Domain", value=q_data.get("domain", ""))
-            topic = c4.text_input("Topic", value=q_data.get("topic", ""))
-            diff = c5.number_input("Difficulty (1-5)", min_value=1, max_value=5, value=int(q_data.get("difficulty_level", 3)))
-            
-            q_text = st.text_area("Question Text", value=q_data.get("question_text", ""), height=150)
-            
-            opts_str = "\n".join(q_data.get("options", [])) if q_data.get("options") else ""
-            options_input = st.text_area("Options (One per line, leave blank if not applicable)", value=opts_str)
-            
-            correct = st.text_input("Correct Answer (Must exactly match one option if Multiple Choice)", value=q_data.get("correct_answer", ""))
-            expl = st.text_area("Explanation", value=q_data.get("explanation", ""))
-            
-            st.divider()
-            st.markdown("### Security & Version Control")
-            reason = st.text_input("Reason for Change (Required for Audit Log)")
-            confirm_key = st.checkbox("I confirm these changes are psychometrically sound and mathematically verified.")
-            
-            submitted = st.form_submit_button("Save Question Data", type="primary")
-            
-            if submitted:
-                if not reason or not confirm_key:
-                    st.error("🔒 Security Halt: You must provide an audit reason and tick the confirmation box.")
-                else:
-                    new_opts = [o.strip() for o in options_input.split("\n") if o.strip()] if options_input.strip() else None
-                    
-                    updated_payload = {
-                        "question_id": q_data["question_id"],
-                        "section": section, "domain": domain, "topic": topic, "subtopic": "",
-                        "question_type": q_type, "difficulty_level": diff,
-                        "question_text": q_text, "options": new_opts,
-                        "correct_answer": correct, "explanation": expl,
-                        "estimated_time_seconds": q_data.get("estimated_time_seconds", 90),
-                        "status": new_status, "source": q_data.get("source", "Admin-Generated")
-                    }
-                    
-                    try:
-                        if mode == "create":
-                            db_manager.insert_question(updated_payload)
-                            db_manager.log_admin_action(admin_id, "CREATED_QUESTION", updated_payload["question_id"], reason=reason)
-                        else:
-                            db_manager.update_question(q_data["question_id"], updated_payload, admin_id, reason)
-                            
-                        st.success("✅ Question and version history saved successfully!")
-                        st.session_state["admin_q_mode"] = "list"
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to save: {e}")
+        # Log action
+        log_id = _new_id("LOG")
+        cur.execute(
+            "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, reason) VALUES (?, ?, ?, ?, ?)",
+            (log_id, admin_id, f"UPDATED_QUESTION_TO_{new_data['status']}", question_id, reason)
+        )
+
+def count_questions() -> int:
+    with db_cursor() as cur:
+        cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
+        return cur.fetchone()["c"]
+
+# --- CBT TEST ENGINE MODULE ---
+def create_test(test_type: str) -> str:
+    test_id = _new_id("TEST")
+    with db_cursor(commit=True) as cur:
+        cur.execute("INSERT INTO tests (test_id, test_type, start_timestamp, status) VALUES (?, ?, ?, 'in_progress')", (test_id, test_type, datetime.now().isoformat()))
+    return test_id
+
+def create_session_section(test_id: str, section_key: str, difficulty_tier: Optional[str] = None) -> str:
+    section_instance_id = _new_id("SEC")
+    time_allotted = SECTION_STRUCTURE[section_key]["time_seconds"]
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """INSERT INTO session_sections (section_instance_id, test_id, section_key, difficulty_tier, time_allotted_seconds, status)
+            VALUES (?, ?, ?, ?, ?, 'pending')""",
+            (section_instance_id, test_id, section_key, difficulty_tier, time_allotted),
+        )
+    return section_instance_id
+
+def start_session_section(section_instance_id: str) -> float:
+    start_ts = time.time()
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE session_sections SET status = 'in_progress', section_start_timestamp = ? WHERE section_instance_id = ?", (start_ts, section_instance_id))
+    return start_ts
+
+def complete_session_section(section_instance_id: str) -> None:
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE session_sections SET status = 'completed', section_end_timestamp = ? WHERE section_instance_id = ?", (time.time(), section_instance_id))
+
+def complete_test(test_id: str) -> None:
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
+
+def health_check() -> Dict[str, Any]:
+    status = {"db_reachable": False, "schema_ok": False, "question_count": 0, "errors": []}
+    try:
+        initialize_database()
+        status["db_reachable"] = True
+        tables = verify_schema()
+        status["schema_ok"] = all(tables.values())
+        status["question_count"] = count_questions()
+    except Exception as e:
+        status["errors"].append(str(e))
+    return status
