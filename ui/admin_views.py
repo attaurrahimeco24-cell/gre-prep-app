@@ -1,14 +1,15 @@
 import streamlit as st
+import pandas as pd
 import time
 import gre_platform_merged as db_manager
+from ui import components
 
 def render_question_bank():
-    st.title("🛠️ Question Bank Management")
+    st.markdown("## 📝 Question Bank Management")
     st.caption("Content Lifecycle, Versioning, and Approvals")
     
     admin_id = st.session_state.get("user_id", "system")
     
-    # Init routing state
     if "admin_q_mode" not in st.session_state:
         st.session_state["admin_q_mode"] = "list"
     if "admin_q_target" not in st.session_state:
@@ -35,7 +36,6 @@ def render_question_bank():
             
         st.markdown(f"**Showing {len(questions)} items**")
         for q in questions:
-            status_color = "green" if q['status'] == "APPROVED" else "orange" if q['status'] == "PENDING_REVIEW" else "gray"
             with st.expander(f"[{q['status']}] {q['question_id']} - {q['domain']} ({q['topic']})"):
                 st.markdown(f"*{q['question_text'][:120]}...*")
                 col1, col2 = st.columns(2)
@@ -130,3 +130,80 @@ def render_question_bank():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed to save: {e}")
+
+def render_user_management():
+    st.markdown("## 👥 User Management")
+    st.caption("Control platform access, roles, and account statuses.")
+    
+    admin_id = st.session_state.get("user_id", "system")
+    admin_role = st.session_state.get("user_role", "ADMIN")
+    
+    users = db_manager.get_all_users()
+    
+    if not users:
+        st.info("No registered users found.")
+        return
+        
+    for u in users:
+        status_text = "ACTIVE" if u['is_active'] else "SUSPENDED"
+        badge = components.status_badge(status_text)
+        
+        with st.expander(f"👤 {u['username']} ({u['email']})"):
+            st.markdown(f"**Current Role:** `{u['role']}` | **Status:** {badge} | **Joined:** {u['created_at'][:10]}", unsafe_allow_html=True)
+            
+            # Security Rule: Don't let an admin lock themselves out
+            if u['user_id'] == admin_id:
+                st.warning("🔒 You cannot modify your own access privileges.")
+                continue
+                
+            # Security Rule: Only SUPER_ADMIN can modify other Admins
+            if u['role'] in ['ADMIN', 'SUPER_ADMIN'] and admin_role != 'SUPER_ADMIN':
+                st.error("🔒 Only a SUPER_ADMIN can modify other administrators.")
+                continue
+                
+            with st.form(key=f"form_user_{u['user_id']}"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    new_role = st.selectbox("Role", ["STUDENT", "ADMIN", "SUPER_ADMIN"], index=["STUDENT", "ADMIN", "SUPER_ADMIN"].index(u['role']))
+                with c2:
+                    new_status = st.selectbox("Account Status", ["ACTIVE", "SUSPENDED"], index=0 if u['is_active'] else 1)
+                
+                reason = st.text_input("Reason for Access Change (Required)")
+                if st.form_submit_button("Update User Access", type="primary"):
+                    if not reason:
+                        st.error("An audit reason is required to change access privileges.")
+                    else:
+                        is_act_int = 1 if new_status == "ACTIVE" else 0
+                        db_manager.update_user_access(u['user_id'], new_role, is_act_int, admin_id, reason)
+                        st.success(f"Successfully updated access for {u['username']}.")
+                        time.sleep(1)
+                        st.rerun()
+
+def render_audit_logs():
+    st.markdown("## 🛡️ System Audit Logs")
+    st.caption("Immutable cryptographic ledger of all administrative actions.")
+    
+    logs = db_manager.get_audit_logs(limit=200)
+    
+    if not logs:
+        st.info("No administrative actions have been logged yet.")
+        return
+        
+    df = pd.DataFrame(logs)
+    
+    # Format the dataframe for cleaner SaaS presentation
+    df = df.rename(columns={
+        "timestamp": "Timestamp",
+        "admin_username": "Admin",
+        "action": "Action",
+        "target_object": "Target Object",
+        "reason": "Audit Reason"
+    })
+    
+    # Display as a full-width interactive dataframe
+    st.dataframe(
+        df[["Timestamp", "Admin", "Action", "Target Object", "Audit Reason"]],
+        use_container_width=True,
+        hide_index=True
+    )
+    st.caption("Displaying the last 200 security events. These records are read-only and cannot be altered.")
