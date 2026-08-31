@@ -11,7 +11,6 @@ from typing import Optional, List, Dict, Any, Sequence
 # ==============================================================================
 # ============================  CONFIG SECTION  ===============================
 # ==============================================================================
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DATABASE_PATH = os.path.join(DATA_DIR, "gre_questions.db")
@@ -32,6 +31,7 @@ SECTION_STRUCTURE = {
 }
 
 DIFFICULTY_TIERS = ["easy", "medium", "hard"]
+ADAPTIVE_THRESHOLDS = {"hard": 0.75, "medium": 0.40}
 SPACED_REPETITION_INTERVALS = [1, 3, 7, 14, 30]
 MASTERY_ACCURACY_THRESHOLD = 0.80
 
@@ -47,7 +47,6 @@ ALL_ERROR_CATEGORIES = [
 # ==============================================================================
 # ============================  SCHEMA SECTION  ===============================
 # ==============================================================================
-
 SCHEMA_SQL = r"""
 PRAGMA foreign_keys = ON;
 
@@ -160,7 +159,6 @@ CREATE TABLE IF NOT EXISTS user_performance (
 # ==============================================================================
 # ==========================  DB MANAGER SECTION  =============================
 # ==============================================================================
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("db_manager")
 
@@ -268,13 +266,34 @@ def insert_question(q: Dict[str, Any]) -> str:
         raise
     return q["question_id"]
 
-def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Optional[Sequence[int]] = None, exclude_ids: Optional[Sequence[str]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    if limit == 0: return []
+def get_question_by_id(question_id: str) -> Optional[Dict[str, Any]]:
+    _require(question_id, "question_id")
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM questions WHERE question_id = ?", (question_id,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result["options"] = json.loads(result["options_json"]) if result["options_json"] else None
+    return result
+
+def get_questions_filtered(section: Optional[str] = None, topic: Optional[str] = None, difficulty_levels: Optional[Sequence[int]] = None, question_type: Optional[str] = None, exclude_ids: Optional[Sequence[str]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    if limit is not None and limit < 0:
+        raise DatabaseError("limit cannot be negative")
+    if limit == 0:
+        return []
     clauses = []
     params: List[Any] = []
+    
     if section:
         clauses.append("section = ?")
         params.append(section)
+    if topic:
+        clauses.append("topic = ?")
+        params.append(topic)
+    if question_type:
+        clauses.append("question_type = ?")
+        params.append(question_type)
     if difficulty_levels:
         placeholders = ",".join("?" * len(difficulty_levels))
         clauses.append(f"difficulty_level IN ({placeholders})")
@@ -301,13 +320,72 @@ def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Opt
         results.append(d)
     return results
 
+def count_questions(section: Optional[str] = None) -> int:
+    with db_cursor() as cur:
+        if section:
+            cur.execute("SELECT COUNT(*) as c FROM questions WHERE section = ?", (section,))
+        else:
+            cur.execute("SELECT COUNT(*) as c FROM questions")
+        return cur.fetchone()["c"]
+
+def insert_passage(passage_id: str, passage_text: str, domain: Optional[str] = None) -> str:
+    _require(passage_id, "passage_id")
+    _require(passage_text, "passage_text")
+    word_count = len(passage_text.split())
+    with db_cursor(commit=True) as cur:
+        cur.execute("INSERT INTO passages (passage_id, passage_text, domain, word_count) VALUES (?, ?, ?, ?)",(passage_id, passage_text, domain, word_count))
+    return passage_id
+
 def create_test(test_type: str) -> str:
+    if test_type not in VALID_MODES:
+        raise DatabaseError(f"Invalid test_type '{test_type}'. Must be one of {VALID_MODES}")
     test_id = _new_id("TEST")
     with db_cursor(commit=True) as cur:
         cur.execute("INSERT INTO tests (test_id, test_type, start_timestamp, status) VALUES (?, ?, ?, 'in_progress')", (test_id, test_type, datetime.now().isoformat()))
     return test_id
 
+def update_test_scores(test_id: str, quant_score: Optional[int] = None, verbal_score: Optional[int] = None, aw_score: Optional[float] = None, total_score: Optional[int] = None) -> None:
+    _require(test_id, "test_id")
+    ALLOWED_UPDATES = {"quant_score": quant_score, "verbal_score": verbal_score, "aw_score": aw_score, "total_score": total_score}
+    fields, params = [], []
+    for column, value in ALLOWED_UPDATES.items():
+        if value is not None:
+            fields.append(f"{column} = ?")
+            params.append(value)
+    if not fields:
+        return
+    params.append(test_id)
+    with db_cursor(commit=True) as cur:
+        cur.execute(f"UPDATE tests SET {', '.join(fields)} WHERE test_id = ?", params)
+
+def complete_test(test_id: str) -> None:
+    _require(test_id, "test_id")
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?",(datetime.now().isoformat(), test_id))
+
+def abandon_test(test_id: str) -> None:
+    _require(test_id, "test_id")
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE tests SET status = 'abandoned', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
+
+def get_test(test_id: str) -> Optional[Dict[str, Any]]:
+    _require(test_id, "test_id")
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM tests WHERE test_id = ?", (test_id,))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+def get_all_tests(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    with db_cursor() as cur:
+        if status:
+            cur.execute("SELECT * FROM tests WHERE status = ? ORDER BY start_timestamp DESC", (status,))
+        else:
+            cur.execute("SELECT * FROM tests ORDER BY start_timestamp DESC")
+        return [dict(r) for r in cur.fetchall()]
+
 def create_session_section(test_id: str, section_key: str, difficulty_tier: Optional[str] = None) -> str:
+    _require(test_id, "test_id")
+    _require(section_key, "section_key")
     section_instance_id = _new_id("SEC")
     time_allotted = SECTION_STRUCTURE[section_key]["time_seconds"]
     with db_cursor(commit=True) as cur:
@@ -319,56 +397,128 @@ def create_session_section(test_id: str, section_key: str, difficulty_tier: Opti
     return section_instance_id
 
 def start_session_section(section_instance_id: str) -> float:
+    _require(section_instance_id, "section_instance_id")
     start_ts = time.time()
     with db_cursor(commit=True) as cur:
         cur.execute("UPDATE session_sections SET status = 'in_progress', section_start_timestamp = ? WHERE section_instance_id = ?", (start_ts, section_instance_id))
     return start_ts
 
-def insert_response(test_id: str, question_id: str, correct_answer: str, user_answer: Optional[str], result: str, time_spent_seconds: int, section_instance_id: Optional[str] = None) -> int:
+def complete_session_section(section_instance_id: str) -> None:
+    _require(section_instance_id, "section_instance_id")
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE session_sections SET status = 'completed', section_end_timestamp = ? WHERE section_instance_id = ?", (time.time(), section_instance_id))
+
+def get_session_section(section_instance_id: str) -> Optional[Dict[str, Any]]:
+    _require(section_instance_id, "section_instance_id")
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM session_sections WHERE section_instance_id = ?", (section_instance_id,))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+def get_sections_for_test(test_id: str) -> List[Dict[str, Any]]:
+    _require(test_id, "test_id")
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM session_sections WHERE test_id = ? ORDER BY section_instance_id", (test_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+def insert_response(test_id: str, question_id: str, correct_answer: str, user_answer: Optional[str], result: str, time_spent_seconds: int, section_instance_id: Optional[str] = None, marked_for_review: bool = False) -> int:
+    _require(test_id, "test_id")
+    _require(question_id, "question_id")
+    _require(correct_answer, "correct_answer")
     with db_cursor(commit=True) as cur:
         cur.execute(
-            """INSERT INTO test_responses (test_id, question_id, section_instance_id, user_answer, correct_answer, result, time_spent_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (test_id, question_id, section_instance_id, user_answer, correct_answer, result, int(time_spent_seconds)),
+            """INSERT INTO test_responses (test_id, question_id, section_instance_id, user_answer, correct_answer, result, time_spent_seconds, marked_for_review)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (test_id, question_id, section_instance_id, user_answer, correct_answer, result, int(time_spent_seconds), int(marked_for_review)),
         )
         return cur.lastrowid
 
+def get_responses_for_test(test_id: str) -> List[Dict[str, Any]]:
+    _require(test_id, "test_id")
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM test_responses WHERE test_id = ? ORDER BY response_id", (test_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+def get_responses_for_section(section_instance_id: str) -> List[Dict[str, Any]]:
+    _require(section_instance_id, "section_instance_id")
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM test_responses WHERE section_instance_id = ? ORDER BY response_id", (section_instance_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+def log_error(question_id: str, error_category: str, test_id: Optional[str] = None, response_id: Optional[int] = None, user_notes: Optional[str] = None, repetition_review_due_date: Optional[str] = None) -> int:
+    _require(question_id, "question_id")
+    _require(error_category, "error_category")
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """INSERT INTO error_log (question_id, test_id, response_id, error_category, user_notes, repetition_review_due_date)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (question_id, test_id, response_id, error_category, user_notes, repetition_review_due_date),
+        )
+        return cur.lastrowid
+
+def get_error_log(resolved: Optional[bool] = None) -> List[Dict[str, Any]]:
+    with db_cursor() as cur:
+        if resolved is None:
+            cur.execute("SELECT * FROM error_log ORDER BY created_at DESC")
+        else:
+            cur.execute("SELECT * FROM error_log WHERE resolved = ? ORDER BY created_at DESC", (int(resolved),))
+        return [dict(r) for r in cur.fetchall()]
+
+def mark_error_resolved(error_id: int) -> None:
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE error_log SET resolved = 1 WHERE error_id = ?", (error_id,))
+
 def upsert_user_performance(topic: str, subtopic: str, correct: bool, time_spent_seconds: int, error_category: Optional[str] = None, user_id: str = "default_user") -> None:
+    _require(topic, "topic")
     subtopic = subtopic or ""
     with db_cursor(commit=True) as cur:
         cur.execute("SELECT total_attempts, correct_attempts, avg_speed_seconds FROM user_performance WHERE user_id = ? AND topic = ? AND subtopic = ?", (user_id, topic, subtopic))
         row = cur.fetchone()
+
         if row is None:
-            total_attempts, correct_attempts = 1, 1 if correct else 0
+            total_attempts = 1
+            correct_attempts = 1 if correct else 0
+            avg_speed = float(time_spent_seconds)
+            accuracy_pct = (correct_attempts / total_attempts) * 100
             cur.execute(
                 """INSERT INTO user_performance (user_id, topic, subtopic, total_attempts, correct_attempts, accuracy_pct, avg_speed_seconds, dominant_error_category, last_practiced, current_repetition_interval)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, topic, subtopic, total_attempts, correct_attempts, (correct_attempts/total_attempts)*100, float(time_spent_seconds), error_category, datetime.now().isoformat(), SPACED_REPETITION_INTERVALS[0]),
+                (user_id, topic, subtopic, total_attempts, correct_attempts, accuracy_pct, avg_speed, error_category, datetime.now().isoformat(), SPACED_REPETITION_INTERVALS[0]),
             )
         else:
             new_total = row["total_attempts"] + 1
             new_correct = row["correct_attempts"] + (1 if correct else 0)
             new_accuracy = (new_correct / new_total) * 100
-            new_avg_speed = ((row["avg_speed_seconds"] * row["total_attempts"]) + time_spent_seconds) / new_total
+            new_avg_speed = ((row["avg_speed_seconds"] or 0.0 * row["total_attempts"]) + time_spent_seconds) / new_total
+            mastery = "mastered" if new_accuracy >= 90 else "proficient" if new_accuracy >= 80 else "developing" if new_accuracy >= 50 else "weak"
             cur.execute(
-                """UPDATE user_performance SET total_attempts = ?, correct_attempts = ?, accuracy_pct = ?, avg_speed_seconds = ?, dominant_error_category = COALESCE(?, dominant_error_category), last_practiced = ?, updated_at = CURRENT_TIMESTAMP
+                """UPDATE user_performance SET total_attempts = ?, correct_attempts = ?, accuracy_pct = ?, avg_speed_seconds = ?, mastery_rating = ?, dominant_error_category = COALESCE(?, dominant_error_category), last_practiced = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE user_id = ? AND topic = ? AND subtopic = ?""",
-                (new_total, new_correct, new_accuracy, new_avg_speed, error_category, datetime.now().isoformat(), user_id, topic, subtopic),
+                (new_total, new_correct, new_accuracy, new_avg_speed, mastery, error_category, datetime.now().isoformat(), user_id, topic, subtopic),
             )
 
-def complete_session_section(section_instance_id: str) -> None:
-    with db_cursor(commit=True) as cur:
-        cur.execute("UPDATE session_sections SET status = 'completed', section_end_timestamp = ? WHERE section_instance_id = ?", (time.time(), section_instance_id))
-
-def complete_test(test_id: str) -> None:
-    with db_cursor(commit=True) as cur:
-        cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
-
-def get_test(test_id: str) -> Optional[Dict[str, Any]]:
+def get_weakness_matrix(user_id: str = "default_user") -> List[Dict[str, Any]]:
     with db_cursor() as cur:
-        cur.execute("SELECT * FROM tests WHERE test_id = ?", (test_id,))
-        row = cur.fetchone()
-    return dict(row) if row else None
+        cur.execute("SELECT * FROM user_performance WHERE user_id = ? ORDER BY accuracy_pct ASC", (user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+def set_next_review_due(topic: str, subtopic: str, due_date: str, new_interval: int, user_id: str = "default_user") -> None:
+    _require(topic, "topic")
+    subtopic = subtopic or ""
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """UPDATE user_performance SET next_review_due = ?, current_repetition_interval = ? WHERE user_id = ? AND topic = ? AND subtopic = ?""",
+            (due_date, new_interval, user_id, topic, subtopic),
+        )
+
+def get_due_reviews(as_of_date: Optional[str] = None, user_id: str = "default_user") -> List[Dict[str, Any]]:
+    as_of_date = as_of_date or date.today().isoformat()
+    with db_cursor() as cur:
+        cur.execute(
+            """SELECT * FROM user_performance WHERE user_id = ? AND next_review_due IS NOT NULL AND next_review_due <= ? ORDER BY next_review_due ASC""",
+            (user_id, as_of_date),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 def health_check() -> Dict[str, Any]:
     status = {"db_reachable": False, "schema_ok": False, "question_count": 0, "errors": []}
@@ -382,12 +532,12 @@ def health_check() -> Dict[str, Any]:
     tables = verify_schema()
     status["schema_ok"] = all(tables.values())
     if not status["schema_ok"]:
-        status["errors"].append("Missing tables")
-    
+        missing = [t for t, ok in tables.items() if not ok]
+        status["errors"].append(f"Missing tables: {missing}")
+
     try:
-        with db_cursor() as cur:
-            cur.execute("SELECT COUNT(*) as c FROM questions")
-            status["question_count"] = cur.fetchone()["c"]
+        status["question_count"] = count_questions()
     except DatabaseError as e:
         status["errors"].append(str(e))
+
     return status
