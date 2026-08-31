@@ -18,6 +18,10 @@ def initialize_test_session(test_type: str, mode: str = "exam_simulation") -> Di
     
     test_id = db_manager.create_test(test_type=mode)
     
+    # ADDED: Schedule the specific sections into the database for this test
+    for sec in target_sections:
+        db_manager.create_session_section(test_id, sec)
+    
     return {
         "test_id": test_id,
         "test_type": test_type,
