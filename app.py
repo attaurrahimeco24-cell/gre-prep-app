@@ -187,12 +187,13 @@ elif page == "📊 Admin Dashboard":
     with h2: st.markdown(f"**Auth Gateway:** {components.status_badge('OPERATIONAL')}", unsafe_allow_html=True)
     with h3: st.markdown(f"**Test Engine:** {components.status_badge('ACTIVE')}", unsafe_allow_html=True)
 
-elif page == "📝 Question Bank":
+elif page == "👥 User Management":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    admin_views.render_question_bank()
+    admin_views.render_user_management()
 
-elif page == "⚙️ Test Configurations":
+elif page == "🛡️ Audit & Security":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
+    admin_views.render_audit_logs()
     
     st.markdown("## ⚙️ Test Configurations")
     st.caption("Configure how simulated GRE tests are timed and adaptively routed.")
