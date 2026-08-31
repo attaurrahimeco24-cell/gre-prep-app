@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import gre_platform_merged as db_manager
+from modules import question_engine
 from ui import components
 
 def render_question_bank():
@@ -32,21 +33,31 @@ def render_question_bank():
         
         if not questions:
             st.info("No questions found matching criteria.")
-            return
-            
-        st.markdown(f"**Showing {len(questions)} items**")
-        for q in questions:
-            with st.expander(f"[{q['status']}] {q['question_id']} - {q['domain']} ({q['topic']})"):
-                st.markdown(f"*{q['question_text'][:120]}...*")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("✏️ Edit / Review Lifecycle", key=f"edit_{q['question_id']}"):
-                        st.session_state["admin_q_mode"] = "edit"
-                        st.session_state["admin_q_target"] = q['question_id']
-                        st.rerun()
-                with col2:
-                    if q['status'] == "ARCHIVED":
-                        st.warning("Archived. Edit to restore to DRAFT.")
+        else:
+            st.markdown(f"**Showing {len(questions)} items**")
+            for q in questions:
+                with st.expander(f"[{q['status']}] {q['question_id']} - {q['domain']} ({q['topic']})"):
+                    st.markdown(f"*{q['question_text'][:120]}...*")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("✏️ Edit / Review Lifecycle", key=f"edit_{q['question_id']}"):
+                            st.session_state["admin_q_mode"] = "edit"
+                            st.session_state["admin_q_target"] = q['question_id']
+                            st.rerun()
+                    with col2:
+                        if q['status'] == "ARCHIVED":
+                            st.warning("Archived. Edit to restore to DRAFT.")
+                            
+        # --- NEW DANGER ZONE FOR RESEEDING CONTENT ---
+        st.divider()
+        components.render_danger_zone("Factory Re-seed Content", "Wipes the current database and injects the 62 verified GRE seed questions.")
+        if st.button("🔄 Force Re-Seed 62 Questions", type="primary"):
+            with st.spinner("Re-seeding Question Bank..."):
+                question_engine.seed_initial_question_bank(force_reset=True)
+                db_manager.log_admin_action(admin_id, "RESEEDED_QUESTION_BANK", "ALL_QUESTIONS", reason="Admin initiated manual re-seed")
+            st.success("✅ Question bank successfully wiped and re-seeded!")
+            time.sleep(1.5)
+            st.rerun()
                         
     elif st.session_state["admin_q_mode"] in ["edit", "create"]:
         mode = st.session_state["admin_q_mode"]
@@ -151,12 +162,10 @@ def render_user_management():
         with st.expander(f"👤 {u['username']} ({u['email']})"):
             st.markdown(f"**Current Role:** `{u['role']}` | **Status:** {badge} | **Joined:** {u['created_at'][:10]}", unsafe_allow_html=True)
             
-            # Security Rule: Don't let an admin lock themselves out
             if u['user_id'] == admin_id:
                 st.warning("🔒 You cannot modify your own access privileges.")
                 continue
                 
-            # Security Rule: Only SUPER_ADMIN can modify other Admins
             if u['role'] in ['ADMIN', 'SUPER_ADMIN'] and admin_role != 'SUPER_ADMIN':
                 st.error("🔒 Only a SUPER_ADMIN can modify other administrators.")
                 continue
@@ -191,7 +200,6 @@ def render_audit_logs():
         
     df = pd.DataFrame(logs)
     
-    # Format the dataframe for cleaner SaaS presentation
     df = df.rename(columns={
         "timestamp": "Timestamp",
         "admin_username": "Admin",
@@ -200,7 +208,6 @@ def render_audit_logs():
         "reason": "Audit Reason"
     })
     
-    # Display as a full-width interactive dataframe
     st.dataframe(
         df[["Timestamp", "Admin", "Action", "Target Object", "Audit Reason"]],
         use_container_width=True,
