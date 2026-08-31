@@ -19,8 +19,6 @@ DATABASE_PATH = os.path.join(DATA_DIR, "gre_questions.db")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# These are the in-memory fallback dictionaries.
-# They are dynamically updated via sync_settings_to_globals() on boot!
 SECTION_STRUCTURE = {
     "AW": {"label": "Analytical Writing", "question_count": 1, "time_seconds": 30 * 60, "order": 1, "adaptive": False},
     "VERBAL_1": {"label": "Verbal Reasoning - Section 1", "measure": "Verbal", "question_count": 12, "time_seconds": 18 * 60, "order": 2, "adaptive": False, "determines_next": "VERBAL_2"},
@@ -208,12 +206,10 @@ def db_transaction():
     finally:
         cur.close()
 
-# --- ADMIN SYSTEM SETTINGS & BOOTSTRAPPING ---
 def seed_default_settings():
-    """Seeds the DB with core platform settings if empty."""
     defaults = {
-        "quant_time_mins": "47",     # Q1 + Q2 (21 + 26)
-        "verbal_time_mins": "41",    # V1 + V2 (18 + 23)
+        "quant_time_mins": "47",
+        "verbal_time_mins": "41",
         "aw_time_mins": "30",
         "adaptive_threshold_hard": "0.75",
         "adaptive_threshold_medium": "0.40",
@@ -227,17 +223,13 @@ def seed_default_settings():
                 cur.execute("INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES (?, ?, 'SYSTEM')", (k, v))
 
 def sync_settings_to_globals():
-    """Reads settings from DB and safely updates memory structures so testing_engine.py doesn't break."""
     with db_cursor() as cur:
         cur.execute("SELECT setting_key, setting_value FROM system_settings")
         rows = cur.fetchall()
-    
     settings = {r["setting_key"]: r["setting_value"] for r in rows}
     
-    if "adaptive_threshold_hard" in settings:
-        ADAPTIVE_THRESHOLDS["hard"] = float(settings["adaptive_threshold_hard"])
-    if "adaptive_threshold_medium" in settings:
-        ADAPTIVE_THRESHOLDS["medium"] = float(settings["adaptive_threshold_medium"])
+    if "adaptive_threshold_hard" in settings: ADAPTIVE_THRESHOLDS["hard"] = float(settings["adaptive_threshold_hard"])
+    if "adaptive_threshold_medium" in settings: ADAPTIVE_THRESHOLDS["medium"] = float(settings["adaptive_threshold_medium"])
 
 def get_all_settings() -> Dict[str, str]:
     with db_cursor() as cur:
@@ -247,25 +239,22 @@ def get_all_settings() -> Dict[str, str]:
 def update_settings(updates: Dict[str, str], admin_id: str, reason: str):
     with db_transaction() as cur:
         for k, v in updates.items():
-            # Get old value for audit
             cur.execute("SELECT setting_value FROM system_settings WHERE setting_key = ?", (k,))
             old_row = cur.fetchone()
             old_val = old_row["setting_value"] if old_row else None
             
-            # Upsert
             cur.execute("""
                 INSERT INTO system_settings (setting_key, setting_value, updated_by, updated_at) 
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
             """, (k, v, admin_id))
             
-            # Log Audit
             log_id = _new_id("LOG")
             cur.execute(
                 "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (log_id, admin_id, "UPDATED_SETTING", k, old_val, v, reason)
             )
-    sync_settings_to_globals() # Keep memory fresh
+    sync_settings_to_globals()
 
 def safe_migrations():
     with db_transaction() as cur:
@@ -299,7 +288,7 @@ def verify_schema() -> Dict[str, bool]:
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
-# --- AUTHENTICATION MODULE ---
+# --- AUTHENTICATION & USER MANAGEMENT ---
 def hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
     if salt is None:
         salt = secrets.token_bytes(16)
@@ -331,6 +320,26 @@ def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
             return {"user_id": user["user_id"], "username": user["username"], "role": user["role"]}
         return None
 
+def get_all_users() -> List[Dict[str, Any]]:
+    with db_cursor() as cur:
+        cur.execute("SELECT user_id, username, email, role, is_active, created_at FROM users ORDER BY created_at DESC")
+        return [dict(row) for row in cur.fetchall()]
+
+def update_user_access(target_user_id: str, new_role: str, is_active: int, admin_id: str, reason: str):
+    with db_transaction() as cur:
+        cur.execute("SELECT role, is_active FROM users WHERE user_id = ?", (target_user_id,))
+        old = cur.fetchone()
+        if not old: raise ValueError("User not found")
+        
+        cur.execute("UPDATE users SET role = ?, is_active = ? WHERE user_id = ?", (new_role, is_active, target_user_id))
+        
+        log_id = _new_id("LOG")
+        cur.execute(
+            "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (log_id, admin_id, f"UPDATED_USER_ACCESS", target_user_id, f"Role:{old['role']},Active:{old['is_active']}", f"Role:{new_role},Active:{is_active}", reason)
+        )
+
+# --- ADMIN AUDIT MODULE ---
 def log_admin_action(admin_id: str, action: str, target_object: str, old_val: str = None, new_val: str = None, reason: str = None):
     log_id = _new_id("LOG")
     with db_cursor(commit=True) as cur:
@@ -338,6 +347,16 @@ def log_admin_action(admin_id: str, action: str, target_object: str, old_val: st
             "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (log_id, admin_id, action, target_object, old_val, new_val, reason)
         )
+
+def get_audit_logs(limit: int = 200) -> List[Dict[str, Any]]:
+    with db_cursor() as cur:
+        cur.execute("""
+            SELECT l.timestamp, u.username as admin_username, l.action, l.target_object, l.old_value, l.new_value, l.reason 
+            FROM admin_audit_logs l 
+            LEFT JOIN users u ON l.admin_id = u.user_id 
+            ORDER BY l.timestamp DESC LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
 
 # --- QUESTION MODULE ---
 def insert_question(q: Dict[str, Any]) -> str:
@@ -498,15 +517,3 @@ def complete_session_section(section_instance_id: str) -> None:
 def complete_test(test_id: str) -> None:
     with db_cursor(commit=True) as cur:
         cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
-
-def health_check() -> Dict[str, Any]:
-    status = {"db_reachable": False, "schema_ok": False, "question_count": 0, "errors": []}
-    try:
-        initialize_database()
-        status["db_reachable"] = True
-        tables = verify_schema()
-        status["schema_ok"] = all(tables.values())
-        status["question_count"] = count_questions()
-    except Exception as e:
-        status["errors"].append(str(e))
-    return status
