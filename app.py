@@ -25,7 +25,17 @@ if "active_page" not in st.session_state:
 if "active_test_id" not in st.session_state:
     st.session_state["active_test_id"] = None
 
-st.sidebar.title("GRE AI Prep")
+st.sidebar.title("🎓 GRE AI Prep Platform")
+
+# --- Control Panel for Reseeding ---
+with st.sidebar.expander("⚙️ Admin Settings", expanded=False):
+    if st.button("🔄 Force Reset & Re-seed Questions", use_container_width=True):
+        question_engine.seed_initial_question_bank(force_reset=True)
+        st.session_state["active_test_id"] = None
+        st.session_state["active_page"] = "Home"
+        st.toast("Database reset! New question bank loaded.", icon="✅")
+        st.rerun()
+
 page = st.sidebar.radio(
     "Navigation",
     ["Home", "Full GRE Simulation", "Analytics Dashboard"],
@@ -34,18 +44,28 @@ page = st.sidebar.radio(
 st.session_state["active_page"] = page
 
 if page == "Home":
-    st.title("GRE Testing Engine")
-    st.markdown("This platform simulates the 2026 shorter GRE General Test format.")
+    st.title("GRE Exam Engine & Testing Center")
+    st.markdown("Simulating the official 2026 shorter GRE General Test format.")
     
-    if st.button("Start Full GRE Simulation", type="primary"):
-        test_data = testing_engine.initialize_test_session("full_length")
-        st.session_state["active_test_id"] = test_data["test_id"]
-        st.session_state["active_page"] = "Full GRE Simulation"
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🚀 Start Full GRE Simulation", type="primary", use_container_width=True):
+            test_data = testing_engine.initialize_test_session("full_length")
+            st.session_state["active_test_id"] = test_data["test_id"]
+            st.session_state["active_page"] = "Full GRE Simulation"
+            st.rerun()
+    with col2:
+        if st.button("📊 Open Analytics Dashboard", use_container_width=True):
+            st.session_state["active_page"] = "Analytics Dashboard"
+            st.rerun()
 
 elif page == "Full GRE Simulation":
     if not st.session_state["active_test_id"]:
-        st.warning("No active test. Return to Home to start.")
+        st.warning("No active exam found. Click below to initialize a test session.")
+        if st.button("Initialize Exam", type="primary"):
+            test_data = testing_engine.initialize_test_session("full_length")
+            st.session_state["active_test_id"] = test_data["test_id"]
+            st.rerun()
     else:
         test_views.render_exam_simulation(st.session_state["active_test_id"])
 
