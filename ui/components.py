@@ -6,80 +6,164 @@ def apply_gre_theme() -> None:
     st.markdown(
         """
         <style>
-        /* Force high contrast light background and dark text */
+        /* =========================================================
+           SAAS DESIGN SYSTEM TOKENS (PHASE 2)
+           ========================================================= */
+        :root {
+            --admin-primary: #2563EB;
+            --admin-primary-hover: #1D4ED8;
+            --admin-success: #059669;
+            --admin-success-bg: #D1FAE5;
+            --admin-warning: #D97706;
+            --admin-warning-bg: #FEF3C7;
+            --admin-danger: #DC2626;
+            --admin-danger-bg: #FEE2E2;
+            --admin-info: #3B82F6;
+            --admin-neutral: #64748B;
+            --admin-neutral-bg: #F1F5F9;
+            
+            --text-main: #0F172A;
+            --text-muted: #475569;
+            --bg-main: #F8FAFC;
+            --bg-card: #FFFFFF;
+            --border-light: #E2E8F0;
+        }
+
+        /* Base App Overrides */
         html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { 
-            background-color: #F8FAFC !important; 
-            color: #0F172A !important; 
+            background-color: var(--bg-main) !important; 
+            color: var(--text-main) !important; 
             font-family: 'Inter', -apple-system, sans-serif !important; 
         }
 
-        /* Force dark font on all text elements, inputs, radios, and labels */
         h1, h2, h3, h4, h5, h6, p, span, div, label, li, strong, small,
         .stRadio label, .stTextInput label, .stTextArea label, [data-testid="stMarkdownContainer"] p {
-            color: #0F172A !important;
+            color: var(--text-main) !important;
         }
 
-        /* Custom CBT Metric Card */
+        /* CBT Metric Card (Student Facing) */
         .metric-card-box {
-            background-color: #FFFFFF !important;
-            border: 1px solid #CBD5E1 !important;
-            border-left: 5px solid #2563EB !important;
+            background-color: var(--bg-card) !important;
+            border: 1px solid var(--border-light) !important;
+            border-left: 5px solid var(--admin-primary) !important;
             padding: 16px 20px !important;
             border-radius: 8px !important;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02) !important;
             margin-bottom: 12px !important;
         }
         .metric-card-label {
-            font-size: 13px !important;
+            font-size: 12px !important;
             font-weight: 700 !important;
-            color: #475569 !important;
+            color: var(--text-muted) !important;
             text-transform: uppercase !important;
             letter-spacing: 0.05em !important;
         }
         .metric-card-value {
-            font-size: 30px !important;
+            font-size: 28px !important;
             font-weight: 800 !important;
-            color: #1E293B !important;
-            margin-top: 4px !important;
-        }
-        .metric-card-sub {
-            font-size: 12px !important;
-            color: #64748B !important;
+            color: var(--text-main) !important;
             margin-top: 4px !important;
         }
 
         /* Sidebar Styling */
         [data-testid="stSidebar"] {
-            background-color: #FFFFFF !important;
-            border-right: 1px solid #E2E8F0 !important;
+            background-color: var(--bg-card) !important;
+            border-right: 1px solid var(--border-light) !important;
         }
 
         /* Button Enhancements */
         .stButton > button {
             border-radius: 6px !important;
             font-weight: 600 !important;
-            background-color: #FFFFFF !important;
-            color: #0F172A !important;
-            border: 1px solid #CBD5E1 !important;
+            background-color: var(--bg-card) !important;
+            color: var(--text-main) !important;
+            border: 1px solid var(--border-light) !important;
+            transition: all 0.2s ease;
+        }
+        .stButton > button:hover {
+            border-color: var(--admin-neutral) !important;
         }
         .stButton > button[kind="primary"] {
-            background-color: #2563EB !important;
+            background-color: var(--admin-primary) !important;
             color: #FFFFFF !important;
             border: none !important;
         }
+        .stButton > button[kind="primary"]:hover {
+            background-color: var(--admin-primary-hover) !important;
+        }
+
+        /* Danger Zone Styles */
+        .danger-zone {
+            border: 1px solid var(--admin-danger);
+            border-radius: 8px;
+            padding: 20px;
+            background-color: var(--admin-danger-bg);
+            margin-top: 20px;
+        }
+        
+        /* Status Badges */
+        .badge {
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            display: inline-block;
+        }
+        .badge-success { background-color: var(--admin-success-bg); color: var(--admin-success); }
+        .badge-warning { background-color: var(--admin-warning-bg); color: var(--admin-warning); }
+        .badge-danger { background-color: var(--admin-danger-bg); color: var(--admin-danger); }
+        .badge-neutral { background-color: var(--admin-neutral-bg); color: var(--admin-neutral); }
         </style>
         """,
         unsafe_allow_html=True
     )
 
 def render_score_card(label: str, value: str, subtext: Optional[str] = None) -> None:
-    sub_html = f"<div class='metric-card-sub'>{subtext}</div>" if subtext else ""
     st.markdown(
         f"""
         <div class="metric-card-box">
             <div class="metric-card-label">{label}</div>
             <div class="metric-card-value">{value}</div>
-            {sub_html}
+            {f'<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">{subtext}</div>' if subtext else ''}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+def status_badge(status: str) -> str:
+    """Returns an HTML string for a semantic status badge."""
+    s = status.upper()
+    if s in ["APPROVED", "HEALTHY", "ACTIVE", "OPERATIONAL", "ON"]:
+        css_class = "badge-success"
+    elif s in ["PENDING_REVIEW", "WARNING", "DRAFT", "PENDING"]:
+        css_class = "badge-warning"
+    elif s in ["FAILED", "ERROR", "DISABLED", "ARCHIVED", "OFF"]:
+        css_class = "badge-danger"
+    else:
+        css_class = "badge-neutral"
+    
+    return f'<span class="badge {css_class}">{s}</span>'
+
+def render_setting_row(title: str, description: str):
+    """Renders the standard SaaS setting title and description for column layouts."""
+    st.markdown(
+        f"""
+        <div style="margin-bottom: 8px;">
+            <strong style="font-size: 1.05rem; color: var(--text-main);">{title}</strong><br>
+            <span style="font-size: 0.85rem; color: var(--text-muted);">{description}</span>
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+
+def render_danger_zone(title: str, description: str):
+    """Renders a visually distinct danger zone container."""
+    st.markdown(
+        f"""
+        <div class="danger-zone">
+            <strong style="color: var(--admin-danger); font-size: 1.1rem;">⚠️ {title}</strong>
+            <p style="color: #7F1D1D; font-size: 0.9rem; margin-top: 4px; margin-bottom: 0;">{description}</p>
         </div>
         """,
         unsafe_allow_html=True
