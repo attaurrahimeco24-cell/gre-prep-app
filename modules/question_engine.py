@@ -101,12 +101,19 @@ def build_section_question_set(section_name: str, target_count: int, difficulty_
         questions.extend(fallback)
     return questions
 
-def seed_initial_question_bank() -> None:
+def seed_initial_question_bank(force_reset: bool = False) -> None:
+    if force_reset:
+        with db_manager.db_cursor(commit=True) as cur:
+            cur.execute("DELETE FROM questions")
+            cur.execute("DELETE FROM user_performance")
+            cur.execute("DELETE FROM error_log")
+
     metrics = db_manager.health_check()
-    if metrics["question_count"] >= 5:
+    if metrics["question_count"] >= 10 and not force_reset:
         return
         
     starter_questions = [
+        # --- ANALYTICAL WRITING ---
         {
             "question_id": "AWA-ISS-001",
             "section": "Analytical Writing",
@@ -117,67 +124,141 @@ def seed_initial_question_bank() -> None:
             "question_text": "To understand the most important characteristics of a society, one must study its major cities. Write a response in which you discuss the extent to which you agree or disagree.",
             "options": None,
             "correct_answer": "N/A",
-            "explanation": "Evaluate clear thesis statement, supporting evidence, and counterarguments.",
+            "explanation": "Evaluate clear thesis, structured arguments, and concrete evidence.",
             "estimated_time_seconds": 1800,
         },
+        
+        # --- QUANTITATIVE REASONING ---
         {
-            "question_id": "QNT-GEO-042",
+            "question_id": "QNT-ALG-001",
+            "section": "Quantitative Reasoning",
+            "domain": "Algebra",
+            "topic": "Quadratic Equations",
+            "question_type": "Multiple Choice",
+            "difficulty_level": 3,
+            "question_text": "If x² - 7x + 12 = 0, what is the product of all possible values of x?",
+            "options": ["7", "12", "-7", "-12", "5"],
+            "correct_answer": "12",
+            "explanation": "Factoring yields (x - 3)(x - 4) = 0, so x = 3 or 4. Product = 3 * 4 = 12.",
+            "estimated_time_seconds": 60,
+        },
+        {
+            "question_id": "QNT-GEO-002",
             "section": "Quantitative Reasoning",
             "domain": "Geometry",
-            "topic": "Circles and Cylinders",
+            "topic": "Circles & Cylinders",
             "question_type": "Multiple Choice",
             "difficulty_level": 4,
-            "question_text": "A right circular cylinder has a volume of 72π and a height of 8. What is the circumference of its base?",
-            "options": ["3π", "6π", "9π", "12π", "18π"],
-            "correct_answer": "6π",
-            "explanation": "Volume = πr²h. 72π = πr²(8). r² = 9, so r = 3. Circumference = 2πr = 2π(3) = 6π.",
+            "question_text": "A circle has an area of 36π. What is the length of the longest straight line segment that can be drawn entirely inside the circle?",
+            "options": ["6", "12", "18", "36", "12π"],
+            "correct_answer": "12",
+            "explanation": "Area = πr² = 36π -> r = 6. Longest internal segment is diameter = 2r = 12.",
+            "estimated_time_seconds": 75,
+        },
+        {
+            "question_id": "QNT-QC-003",
+            "section": "Quantitative Reasoning",
+            "domain": "Arithmetic",
+            "topic": "Quantitative Comparison",
+            "question_type": "Quantitative Comparison",
+            "difficulty_level": 3,
+            "question_text": "Quantity A: 2⁵⁰\nQuantity B: 3³³",
+            "options": [
+                "Quantity A is greater.",
+                "Quantity B is greater.",
+                "The two quantities are equal.",
+                "The relationship cannot be determined from the information given."
+            ],
+            "correct_answer": "Quantity B is greater.",
+            "explanation": "2⁵⁰ = (2⁵)¹⁰ = 32¹⁰. 3³³ ≈ (3³)¹¹ = 27¹¹. Comparing 32¹⁰ to 27¹¹, 3³³ is larger.",
             "estimated_time_seconds": 90,
         },
         {
-            "question_id": "QNT-STA-018",
+            "question_id": "QNT-NUM-004",
             "section": "Quantitative Reasoning",
             "domain": "Data Analysis",
-            "topic": "Probability",
+            "topic": "Statistics & Means",
             "question_type": "Numeric Entry",
-            "difficulty_level": 3,
-            "question_text": "A jar contains 4 red marbles, 5 blue marbles, and 3 green marbles. If two marbles are drawn at random without replacement, what is the probability that both are blue? (Enter as a decimal to two places)",
+            "difficulty_level": 2,
+            "question_text": "The average (arithmetic mean) of five integers is 18. If four of the numbers are 12, 15, 20, and 24, what is the fifth number?",
             "options": None,
-            "correct_answer": "0.15",
-            "explanation": "Total marbles = 12. P(First is blue) = 5/12. P(Second is blue) = 4/11. (5/12) * (4/11) = 20/132 = 5/33 ≈ 0.15.",
-            "estimated_time_seconds": 120,
+            "correct_answer": "19",
+            "explanation": "Sum needed = 5 * 18 = 90. Known sum = 12 + 15 + 20 + 24 = 71. Fifth = 90 - 71 = 19.",
+            "estimated_time_seconds": 45,
         },
         {
-            "question_id": "VRB-TC-088",
+            "question_id": "QNT-ALG-005",
+            "section": "Quantitative Reasoning",
+            "domain": "Algebra",
+            "topic": "Exponents & Powers",
+            "question_type": "Multiple Choice",
+            "difficulty_level": 3,
+            "question_text": "If 2ˣ⁺³ = 64, what is the value of 3ˣ?",
+            "options": ["9", "27", "81", "243", "729"],
+            "correct_answer": "27",
+            "explanation": "264 = 2⁶ -> x + 3 = 6 -> x = 3. Therefore 3³ = 27.",
+            "estimated_time_seconds": 60,
+        },
+
+        # --- VERBAL REASONING ---
+        {
+            "question_id": "VRB-TC-001",
             "section": "Verbal Reasoning",
             "domain": "Text Completion",
             "topic": "Contextual Logic",
             "question_type": "Multiple Choice",
-            "difficulty_level": 4,
-            "question_text": "Despite the team’s outward display of ________, the atmosphere in the locker room was actually fraught with tension and mutual suspicion.",
-            "options": ["hostility", "camaraderie", "apathy", "competence", "cynicism"],
-            "correct_answer": "camaraderie",
-            "explanation": "The word 'Despite' sets up a contrast with 'tension and mutual suspicion'. 'Camaraderie' (friendship/trust) provides the exact opposite meaning required.",
+            "difficulty_level": 3,
+            "question_text": "The speaker's presentation was marked by extreme ________; she managed to synthesize a decade of complex research in under eight minutes.",
+            "options": ["loquacity", "brevity", "veracity", "arrogance", "ambiguity"],
+            "correct_answer": "brevity",
+            "explanation": "'under eight minutes' points directly to conciseness / brevity.",
             "estimated_time_seconds": 45,
         },
         {
-            "question_id": "VRB-RC-012",
+            "question_id": "VRB-SE-002",
+            "section": "Verbal Reasoning",
+            "domain": "Sentence Equivalence",
+            "topic": "Vocabulary in Context",
+            "question_type": "Multiple Choice",
+            "difficulty_level": 4,
+            "question_text": "Despite early harsh assessments by critics, the architectural design has proven remarkably ________, retaining its appeal across decades.",
+            "options": ["ephemeral", "enduring", "transient", "perennial", "esoteric", "volatile"],
+            "correct_answer": "enduring",
+            "explanation": "'retaining its appeal across decades' requires words meaning lasting (enduring).",
+            "estimated_time_seconds": 60,
+        },
+        {
+            "question_id": "VRB-RC-003",
             "section": "Verbal Reasoning",
             "domain": "Reading Comprehension",
-            "topic": "Primary Purpose",
+            "topic": "Inference & Purpose",
             "question_type": "Multiple Choice",
             "difficulty_level": 3,
-            "question_text": "Read the excerpt: 'While early historians viewed the industrial shift as a sudden upheaval, modern economists argue it was a gradual transition layered upon existing agrarian networks.' What is the primary purpose of this sentence?",
+            "question_text": "Passage Excerpt: 'While early 20th-century geologists assumed continental plates were static, seismic velocity analysis revealed continuous subduction dynamics.' Which claim is supported by the text?",
             "options": [
-                "To disprove a modern economic theory.",
-                "To contrast two historical interpretations of an event.",
-                "To argue that agrarian networks were inefficient.",
-                "To suggest that historians ignore economic data."
+                "Early geologists utilized seismic velocity analysis extensively.",
+                "Subduction dynamics prevent continental drift.",
+                "Seismic velocity analysis disproved the static plate assumption.",
+                "Continental plates are confirmed to be completely static."
             ],
-            "correct_answer": "To contrast two historical interpretations of an event.",
-            "explanation": "The text explicitly contrasts how 'early historians' viewed the shift versus how 'modern economists' view it.",
-            "estimated_time_seconds": 75,
+            "correct_answer": "Seismic velocity analysis disproved the static plate assumption.",
+            "explanation": "The passage states seismic analysis revealed dynamics contrary to static assumptions.",
+            "estimated_time_seconds": 90,
+        },
+        {
+            "question_id": "VRB-TC-004",
+            "section": "Verbal Reasoning",
+            "domain": "Text Completion",
+            "topic": "Tone & Contrast",
+            "question_type": "Multiple Choice",
+            "difficulty_level": 4,
+            "question_text": "Far from being an ________ force, the new trade policy acted as a major catalyst for regional economic growth.",
+            "options": ["inhibiting", "invigorating", "beneficial", "unbiased", "unprecedented"],
+            "correct_answer": "inhibiting",
+            "explanation": "'Far from being X, it acted as a catalyst for growth'. X must mean hindering/inhibiting.",
+            "estimated_time_seconds": 50,
         }
     ]
 
     batch_add_questions(starter_questions)
-    logger.info("Auto-seeded diverse test bank with %d questions.", len(starter_questions))
+    logger.info("Auto-seeded question bank with %d items.", len(starter_questions))
