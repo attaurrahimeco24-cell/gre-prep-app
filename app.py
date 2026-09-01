@@ -84,7 +84,7 @@ if not st.session_state.get("authenticated", False):
                         st.rerun()
                     else: st.error("Authentication failed. Invalid credentials or inactive account.")
                 except ValueError as e:
-                    st.error(str(e)) # Captures Brute-Force Lockout msg
+                    st.error(str(e))
                     
         with tab_register:
             reg_user = st.text_input("Choose Username", key="reg_user")
