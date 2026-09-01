@@ -6,7 +6,6 @@ from modules import question_engine, email_service
 from ui import components
 
 def ensure_data_seeded(admin_id: str):
-    """FAILSAFE: If the database is empty, force an automatic reseed so the UI is never broken."""
     if db_manager.count_questions() == 0:
         with st.spinner("Initializing Premium Content Database..."):
             question_engine.seed_initial_question_bank(force_reset=True)
@@ -21,11 +20,10 @@ def render_question_bank():
     admin_id = st.session_state.get("user_id", "system")
     ensure_data_seeded(admin_id)
     
-    st.markdown("## 📝 Content Architecture")
+    st.markdown("## 📚 Content Library")
     st.caption("Manage the psychometric question bank, review lifecycle, and version control.")
     
-    if "admin_q_mode" not in st.session_state:
-        st.session_state["admin_q_mode"] = "list"
+    if "admin_q_mode" not in st.session_state: st.session_state["admin_q_mode"] = "list"
     
     if st.session_state["admin_q_mode"] == "list":
         st.markdown("<br>", unsafe_allow_html=True)
@@ -54,9 +52,7 @@ def render_question_bank():
             st.markdown(f"**Showing {len(questions)} verified assets**")
             
             st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
+                display_df, use_container_width=True, hide_index=True,
                 column_config={
                     "Status": st.column_config.TextColumn("Status", width="small"),
                     "Tier": st.column_config.NumberColumn("Tier", format="⭐ %d", width="small"),
@@ -65,10 +61,8 @@ def render_question_bank():
             )
             
             st.markdown("### Action Center")
-            st.caption("Enter a Question ID to edit its content or change its approval status.")
             c_edit1, c_edit2 = st.columns([3, 1])
-            with c_edit1:
-                target_edit_id = st.text_input("Enter Question ID (e.g., Q-ALG-01)", label_visibility="collapsed")
+            with c_edit1: target_edit_id = st.text_input("Enter Question ID (e.g., Q-ALG-...)", label_visibility="collapsed")
             with c_edit2:
                 if st.button("✏️ Edit Question", use_container_width=True):
                     if target_edit_id:
@@ -78,7 +72,7 @@ def render_question_bank():
 
         components.render_danger_zone("Factory Content Wipe", "Destroys all custom edits and procedurally generates 2,000 fresh questions with geometric SVGs.")
         if st.button("🔄 Execute Factory Reset & Build 2,000 Questions", type="primary"):
-            with st.spinner("Procedurally generating 2,000 questions... (this takes ~3 seconds)"):
+            with st.spinner("Procedurally generating 2,000 questions..."):
                 question_engine.seed_initial_question_bank(force_reset=True)
                 db_manager.log_admin_action(admin_id, "FACTORY_RESET", "QUESTIONS", reason="Admin requested 2000 question build")
             st.success("✅ 2,000 Questions generated and committed!")
@@ -104,10 +98,8 @@ def render_question_bank():
             st.markdown(f"### Editing Asset: `{q_id}`")
         else:
             q_data = {
-                "question_id": f"Q-NEW-{db_manager._new_id('')[:6]}",
-                "section": "Quantitative Reasoning", "domain": "", "topic": "", "subtopic": "",
-                "question_type": "Multiple Choice", "difficulty_level": 3, "question_text": "",
-                "options": ["A", "B", "C", "D"], "correct_answer": "", "explanation": "",
+                "question_id": f"Q-NEW-{db_manager._new_id('')[:6]}", "section": "Quantitative Reasoning", "domain": "", "topic": "", "subtopic": "",
+                "question_type": "Multiple Choice", "difficulty_level": 3, "question_text": "", "options": ["A", "B", "C", "D"], "correct_answer": "", "explanation": "",
                 "estimated_time_seconds": 90, "status": "DRAFT"
             }
             st.markdown("### Drafting New Content")
@@ -120,7 +112,7 @@ def render_question_bank():
             q_type = col_c.selectbox("Type", ["Multiple Choice", "Numeric Entry", "Quantitative Comparison", "Issue Task"], index=["Multiple Choice", "Numeric Entry", "Quantitative Comparison", "Issue Task"].index(q_data.get("question_type", "Multiple Choice")))
             
             col_d, col_e, col_f = st.columns(3)
-            domain = col_d.text_input("Domain (e.g., Algebra, Text Completion)", value=q_data.get("domain", ""))
+            domain = col_d.text_input("Domain", value=q_data.get("domain", ""))
             topic = col_e.text_input("Topic", value=q_data.get("topic", ""))
             diff = col_f.number_input("Difficulty Tier (1-5)", min_value=1, max_value=5, value=int(q_data.get("difficulty_level", 3)))
             
@@ -133,13 +125,11 @@ def render_question_bank():
             expl = st.text_area("Detailed Explanation", value=q_data.get("explanation", ""))
             
             st.markdown("---")
-            st.markdown("#### Security Verification")
             reason = st.text_input("Audit Reason (Required)")
             confirm_key = st.checkbox("I verify this content is psychometrically valid and structurally secure.")
             
             if st.form_submit_button("💾 Commit Changes to Production Database", type="primary"):
-                if not reason or not confirm_key:
-                    st.error("🔒 Security Halt: Audit reason and checkbox verification are required.")
+                if not reason or not confirm_key: st.error("🔒 Security Halt: Audit reason and verification required.")
                 else:
                     new_opts = [o.strip() for o in options_input.split("\n") if o.strip()] if options_input.strip() else None
                     updated_payload = {
@@ -162,7 +152,7 @@ def render_question_bank():
                         st.error(f"Failed to commit: {e}")
 
 def render_user_management():
-    st.markdown("## 👥 User Management")
+    st.markdown("## 🧑‍🎓 User Access Management")
     st.caption("Control platform access, roles, and verification statuses.")
     
     admin_id = st.session_state.get("user_id", "system")
@@ -176,12 +166,7 @@ def render_user_management():
     for u in users:
         status_text = "ACTIVE" if u['is_active'] else "SUSPENDED"
         badge = components.status_badge(status_text)
-        
-        # Determine Verification Badge
-        if u['is_verified']:
-            ver_badge = '<span class="badge badge-success">VERIFIED</span>'
-        else:
-            ver_badge = '<span class="badge badge-warning">PENDING</span>'
+        ver_badge = '<span class="badge badge-success">VERIFIED</span>' if u['is_verified'] else '<span class="badge badge-warning">PENDING</span>'
         
         with st.expander(f"👤 {u['username']} ({u['email']})"):
             st.markdown(f"**Role:** `{u['role']}` | **Account Status:** {badge} | **Email Status:** {ver_badge}", unsafe_allow_html=True)
@@ -189,40 +174,31 @@ def render_user_management():
             if u['user_id'] == admin_id:
                 st.warning("🔒 You cannot modify your own access privileges.")
                 continue
-                
             if u['role'] in ['ADMIN', 'SUPER_ADMIN'] and admin_role != 'SUPER_ADMIN':
                 st.error("🔒 Only a SUPER_ADMIN can modify other administrators.")
                 continue
                 
             with st.form(key=f"form_user_{u['user_id']}"):
                 c1, c2, c3 = st.columns(3)
-                with c1:
-                    new_role = st.selectbox("Role", ["STUDENT", "ADMIN", "SUPER_ADMIN"], index=["STUDENT", "ADMIN", "SUPER_ADMIN"].index(u['role']))
-                with c2:
-                    new_status = st.selectbox("Account Status", ["ACTIVE", "SUSPENDED"], index=0 if u['is_active'] else 1)
-                with c3:
-                    new_ver = st.selectbox("Manual Verification", ["VERIFIED", "PENDING"], index=0 if u['is_verified'] else 1, disabled=bool(u['is_verified']))
+                with c1: new_role = st.selectbox("Role", ["STUDENT", "ADMIN", "SUPER_ADMIN"], index=["STUDENT", "ADMIN", "SUPER_ADMIN"].index(u['role']))
+                with c2: new_status = st.selectbox("Account Status", ["ACTIVE", "SUSPENDED"], index=0 if u['is_active'] else 1)
+                with c3: new_ver = st.selectbox("Manual Verification", ["VERIFIED", "PENDING"], index=0 if u['is_verified'] else 1, disabled=bool(u['is_verified']))
                 
                 reason = st.text_input("Reason for Access Change (Required for Audit Log)")
                 
                 if st.form_submit_button("Update User Profile", type="primary"):
-                    if not reason:
-                        st.error("An audit reason is required to change user privileges.")
+                    if not reason: st.error("An audit reason is required to change user privileges.")
                     else:
                         is_act_int = 1 if new_status == "ACTIVE" else 0
                         db_manager.update_user_access(u['user_id'], new_role, is_act_int, admin_id, reason)
-                        
-                        # Process manual verification override
                         if new_ver == "VERIFIED" and not u['is_verified']:
                             db_manager.manually_verify_user(u['user_id'], admin_id, reason)
-                            st.toast(f"{u['username']} has been manually verified.", icon="✅")
-                            
                         st.success(f"Successfully updated profile for {u['username']}.")
                         time.sleep(1)
                         st.rerun()
 
 def render_email_settings():
-    st.markdown("## 📧 Email & SMTP Configuration")
+    st.markdown("## ✉️ SMTP Gateway")
     st.caption("Securely configure transactional email delivery for student verification and alerts.")
     
     admin_id = st.session_state.get("user_id", "system")
@@ -248,8 +224,7 @@ def render_email_settings():
         st.divider()
         reason = st.text_input("Audit Reason (Required)")
         if st.form_submit_button("💾 Securely Save SMTP Configuration", type="primary"):
-            if not reason:
-                st.error("🔒 Security Halt: Audit reason required to modify SMTP credentials.")
+            if not reason: st.error("🔒 Security Halt: Audit reason required.")
             else:
                 updates = {
                     "smtp_host": host, "smtp_port": port, "smtp_user": user, 
@@ -262,22 +237,19 @@ def render_email_settings():
                 st.rerun()
                 
     st.markdown("### 🧪 Connection Diagnostics")
-    st.caption("Send a secure test email to verify your SMTP configuration is functional.")
     with st.form("test_email_form"):
         test_address = st.text_input("Recipient Email Address")
         if st.form_submit_button("Send Diagnostic Test Email"):
             if test_address:
                 with st.spinner("Initiating SMTP connection..."):
                     success = email_service.send_verification_email(admin_id, test_address, "Admin Tester")
-                if success:
-                    st.success(f"✅ Test email successfully dispatched to {test_address}.")
-                else:
-                    st.error("❌ SMTP connection failed. Check your credentials and server logs.")
-            else:
-                st.warning("Please enter a destination email address.")
+                if success.get("status") == "sent": st.success(f"✅ Test email successfully dispatched to {test_address}.")
+                elif success.get("status") == "simulated": st.warning("⚠️ SMTP NOT CONFIGURED. Dev-mode simulation active.")
+                else: st.error("❌ SMTP connection failed. Check your credentials and server logs.")
+            else: st.warning("Please enter a destination email address.")
 
 def render_audit_logs():
-    st.markdown("## 🛡️ System Audit Logs")
+    st.markdown("## 🔐 System Audit Ledger")
     st.caption("Immutable cryptographic ledger of all administrative actions.")
     
     logs = db_manager.get_audit_logs(limit=200)
@@ -291,7 +263,4 @@ def render_audit_logs():
         "target_object": "Target Object", "reason": "Audit Reason"
     })
     
-    st.dataframe(
-        df[["Timestamp", "Admin", "Action", "Target Object", "Audit Reason"]],
-        use_container_width=True, hide_index=True
-    )
+    st.dataframe(df[["Timestamp", "Admin", "Action", "Target Object", "Audit Reason"]], use_container_width=True, hide_index=True)
