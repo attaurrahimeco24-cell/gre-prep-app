@@ -22,10 +22,8 @@ def setup_system():
     with db_manager.db_cursor() as cur:
         cur.execute("SELECT COUNT(*) as c FROM users WHERE role = 'SUPER_ADMIN'")
         if cur.fetchone()["c"] == 0:
-            try:
-                db_manager.create_user("admin", "admin@greplatform.local", "admin123", "SUPER_ADMIN", is_verified=1)
-            except Exception:
-                pass 
+            try: db_manager.create_user("admin", "admin@greplatform.local", "admin123", "SUPER_ADMIN", is_verified=1)
+            except Exception: pass 
 
 setup_system()
 
@@ -37,36 +35,25 @@ def perform_logout():
     st.session_state.clear()
     st.rerun()
 
-# ==============================================================================
-# ========================= EMAIL VERIFICATION ROUTER ==========================
-# ==============================================================================
-# This handles the URL route if SMTP *is* active
+# --- EMAIL VERIFICATION ROUTER ---
 query_params = st.query_params
 if "verify" in query_params:
     raw_token = query_params["verify"]
     token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
     
     result = db_manager.verify_and_use_token(token_hash)
+    try: del st.query_params["verify"]
+    except Exception: pass 
     
-    try:
-        del st.query_params["verify"]
-    except Exception:
-        pass 
-    
-    if result["status"] == "valid":
-        st.session_state["verification_success"] = True
-    elif result["status"] == "expired":
-        st.error("❌ This verification link has expired. Please log in to request a new one.")
-    elif result["status"] == "used":
-        st.warning("⚠️ This verification link has already been used.")
+    if result["status"] == "valid": st.session_state["verification_success"] = True
+    elif result["status"] == "expired": st.error("❌ This verification link has expired. Please log in to request a new one.")
+    elif result["status"] == "used": st.warning("⚠️ This verification link has already been used.")
 
 if st.session_state.get("verification_success"):
     st.success("✅ Email verified successfully! Your account is now active. You may log in.")
     st.session_state.pop("verification_success", None)
 
-# ==============================================================================
-# ========================= AUTHENTICATION GATEWAY =============================
-# ==============================================================================
+# --- AUTHENTICATION GATEWAY ---
 if not st.session_state.get("authenticated", False):
     st.markdown(
         """
@@ -81,7 +68,7 @@ if not st.session_state.get("authenticated", False):
     with col2:
         tab_login, tab_register = st.tabs(["🔐 Secure Login", "📝 Create Account"])
         
-      with tab_login:
+        with tab_login:
             login_user = st.text_input("Username", key="login_user")
             login_pass = st.text_input("Password", type="password", key="login_pass")
             if st.button("Authenticate", type="primary", use_container_width=True):
@@ -95,34 +82,29 @@ if not st.session_state.get("authenticated", False):
                         st.session_state["is_verified"] = user_data["is_verified"]
                         st.session_state["active_page"] = "🧭 Workspace" if user_data["role"] == "STUDENT" else "🎛️ Command Center"
                         st.rerun()
-                    else:
-                        st.error("Authentication failed. Invalid credentials or inactive account.")
+                    else: st.error("Authentication failed. Invalid credentials or inactive account.")
                 except ValueError as e:
-                    st.error(str(e)) # Display the 15-minute Lockout Security Alert
+                    st.error(str(e)) # Captures Brute-Force Lockout msg
                     
         with tab_register:
             reg_user = st.text_input("Choose Username", key="reg_user")
             reg_email = st.text_input("Email Address", key="reg_email")
             reg_pass = st.text_input("Choose Password", type="password", key="reg_pass")
             if st.button("Register Account", type="primary", use_container_width=True):
-                if not reg_user or not reg_email or not reg_pass:
-                    st.error("All fields are required.")
+                if not reg_user or not reg_email or not reg_pass: st.error("All fields are required.")
                 else:
                     try:
                         new_user_id = db_manager.create_user(reg_user, reg_email, reg_pass, "STUDENT", is_verified=0)
                         res = email_service.send_verification_email(new_user_id, reg_email, reg_user)
                         
-                        if res["status"] == "simulated":
-                            st.session_state["dev_verify_active"] = True
+                        if res["status"] == "simulated": st.session_state["dev_verify_active"] = True
                             
                         st.success("✅ Account created successfully! Please check your email to verify your account before logging in.")
                     except ValueError as e:
                         st.error(str(e))
     st.stop()
 
-# ==============================================================================
-# ======================== PENDING VERIFICATION WALL ===========================
-# ==============================================================================
+# --- PENDING VERIFICATION WALL ---
 if not st.session_state.get("is_verified", False):
     st.markdown(
         """
@@ -142,11 +124,8 @@ if not st.session_state.get("is_verified", False):
     with c2:
         st.info(f"We've sent a secure verification link to **{email}**.")
         
-        # ---------------------------------------------------------
-        # SMART DEV MODE UI - BYPASSES STREAMLIT URL ISSUES ENTIRELY
-        # ---------------------------------------------------------
         if st.session_state.get("dev_verify_active"):
-            st.warning("⚠️ **DEVELOPMENT MODE:** No SMTP credentials configured. Streamlit Cloud blocks URL parameters. Click the button below to instantly verify your account.")
+            st.warning("⚠️ **DEVELOPMENT MODE:** No SMTP credentials configured. Click the button below to instantly verify your account.")
             if st.button("🔧 INSTANTLY VERIFY ACCOUNT (Dev Mode)", type="primary", use_container_width=True):
                 db_manager.manually_verify_user(user_id, "system_dev", "Dev mode auto-verify")
                 st.session_state["is_verified"] = True
@@ -160,21 +139,15 @@ if not st.session_state.get("is_verified", False):
             if st.button("Resend Email", use_container_width=True):
                 if db_manager.check_verification_cooldown(user_id, 45):
                     res = email_service.send_verification_email(user_id, email, st.session_state["username"])
-                    if res["status"] == "simulated":
-                        st.session_state["dev_verify_active"] = True
+                    if res["status"] == "simulated": st.session_state["dev_verify_active"] = True
                     st.success("Verification email sent!")
                     st.rerun()
-                else:
-                    st.error("⏱️ Please wait 45 seconds before requesting another email.")
+                else: st.error("⏱️ Please wait 45 seconds before requesting another email.")
         with btn_c2:
-            if st.button("Logout", use_container_width=True):
-                perform_logout()
-                
+            if st.button("Logout", use_container_width=True): perform_logout()
     st.stop()
 
-# ==============================================================================
-# ======================== PROTECTED APPLICATION AREA ==========================
-# ==============================================================================
+# --- PROTECTED APPLICATION AREA ---
 role = st.session_state.get("user_role", "STUDENT")
 
 st.sidebar.markdown(f"**User:** `{st.session_state['username']}`")
@@ -187,19 +160,15 @@ else:
     nav_options = ["🎛️ Command Center", "📚 Content Library", "⚙️ Exam Tuning", "🧑‍🎓 User Access", "✉️ SMTP Gateway", "🔐 Audit Ledger"]
 
 current_page = st.session_state.get("active_page")
-if current_page not in nav_options:
-    current_page = nav_options[0]
+if current_page not in nav_options: current_page = nav_options[0]
 
 page = st.sidebar.radio("Main Menu", nav_options, index=nav_options.index(current_page), label_visibility="collapsed")
 st.session_state["active_page"] = page
 
 st.sidebar.divider()
-if st.sidebar.button("🚪 Secure Logout", use_container_width=True):
-    perform_logout()
+if st.sidebar.button("🚪 Secure Logout", use_container_width=True): perform_logout()
 
-# ------------------------------------------------------------------------------
-# STUDENT ROUTES
-# ------------------------------------------------------------------------------
+# --- STUDENT ROUTES ---
 if page == "🧭 Workspace":
     st.markdown("<div style='text-align: center; padding: 1rem 0;'><h1 style='font-weight: 800;'>Elevate Your Future.</h1><p style='color: var(--text-muted);'>Master the modern, shortened GRE with adaptive AI algorithms.</p></div>", unsafe_allow_html=True)
     st.divider()
@@ -207,7 +176,7 @@ if page == "🧭 Workspace":
     with col2:
         if st.button("🚀 Start Full GRE Simulation", type="primary", use_container_width=True):
             clear_test_state()
-            test_data = testing_engine.initialize_test_session("full_length")
+            test_data = testing_engine.initialize_test_session(st.session_state["user_id"], "full_length")
             st.session_state["active_test_id"] = test_data["test_id"]
             st.session_state["active_page"] = "⏱️ Exam Simulator"
             st.rerun()
@@ -225,12 +194,9 @@ elif page == "⏱️ Exam Simulator":
 elif page == "📈 Performance Analytics":
     dashboard_views.render_analytics_dashboard()
 
-# ------------------------------------------------------------------------------
-# ADMIN ROUTES (STRICTLY GUARDED)
-# ------------------------------------------------------------------------------
+# --- ADMIN ROUTES ---
 elif page == "🎛️ Command Center":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-        
     st.markdown("## 🎛️ Command Center")
     st.caption("Central Platform Telemetry & System Health")
     
@@ -250,10 +216,8 @@ elif page == "🎛️ Command Center":
     with c3: components.render_score_card("Approved Questions", str(total_qs))
 
     st.markdown("### Requires Attention")
-    if pending_qs > 0:
-        st.warning(f"⚠️ **{pending_qs} questions** are currently awaiting administrative review and approval.")
-    else:
-        st.success("✓ No content currently requires administrative review.")
+    if pending_qs > 0: st.warning(f"⚠️ **{pending_qs} questions** are currently awaiting administrative review and approval.")
+    else: st.success("✓ No content currently requires administrative review.")
 
     st.markdown("### System Health")
     h1, h2, h3 = st.columns(3)
@@ -267,7 +231,6 @@ elif page == "📚 Content Library":
 
 elif page == "⚙️ Exam Tuning":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    
     st.markdown("## ⚙️ Exam Tuning")
     st.caption("Configure how simulated GRE tests are timed and adaptively routed.")
     
@@ -300,17 +263,12 @@ elif page == "⚙️ Exam Tuning":
             
         st.divider()
         audit_reason = st.text_input("Audit Reason (Required for system log)")
-        
         if st.form_submit_button("💾 Save Platform Configurations", type="primary"):
-            if not audit_reason:
-                st.error("🔒 Security Halt: You must provide a reason for configuration changes.")
+            if not audit_reason: st.error("🔒 Security Halt: You must provide a reason for configuration changes.")
             else:
                 updates = {
-                    "quant_time_mins": str(quant_time),
-                    "verbal_time_mins": str(verbal_time),
-                    "aw_time_mins": str(aw_time),
-                    "adaptive_threshold_hard": str(hard_thresh),
-                    "adaptive_threshold_medium": str(med_thresh)
+                    "quant_time_mins": str(quant_time), "verbal_time_mins": str(verbal_time), "aw_time_mins": str(aw_time),
+                    "adaptive_threshold_hard": str(hard_thresh), "adaptive_threshold_medium": str(med_thresh)
                 }
                 db_manager.update_settings(updates, admin_id, audit_reason)
                 st.success("✅ Configurations successfully updated and applied to the Test Engine.")
