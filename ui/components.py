@@ -1,7 +1,6 @@
 import streamlit as st
 
 def apply_gre_theme():
-    """Applies the enterprise academic design system, typography hierarchy, and accessibility standards."""
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
@@ -24,13 +23,11 @@ def apply_gre_theme():
             --info-text: #3730A3;
         }
 
-        /* Global Font Application & Readability */
         html, body, [class*="css"] {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
             color: var(--text-main);
         }
 
-        /* Reading Passage & Question Typography (Crucial for RC Comprehension) */
         .reading-passage {
             font-size: 1.125rem;
             line-height: 1.75;
@@ -42,7 +39,6 @@ def apply_gre_theme():
             margin-bottom: 20px;
         }
 
-        /* Badges */
         .badge {
             padding: 6px 12px;
             border-radius: 16px;
@@ -57,7 +53,6 @@ def apply_gre_theme():
         .badge-danger { background: var(--danger-bg); color: var(--danger-text); }
         .badge-info { background: var(--info-bg); color: var(--info-text); }
 
-        /* Metric Score Cards */
         .score-card {
             background: var(--surface);
             padding: 24px;
@@ -81,7 +76,6 @@ def apply_gre_theme():
             font-weight: 800; 
         }
 
-        /* Technical / Code Text */
         code, pre {
             font-family: 'JetBrains Mono', monospace !important;
         }
@@ -89,7 +83,6 @@ def apply_gre_theme():
     """, unsafe_allow_html=True)
 
 def status_badge(status: str) -> str:
-    """Returns an accessible, semantic HTML status badge."""
     color_map = {
         "ACTIVE": "success", "APPROVED": "success", "HEALTHY": "success", "OPERATIONAL": "success", "VERIFIED": "success", "WAL_MODE_ACTIVE": "success", "ARGON2ID_SECURED": "success",
         "PENDING_REVIEW": "warning", "SUSPENDED": "warning", "PENDING": "warning",
@@ -99,15 +92,12 @@ def status_badge(status: str) -> str:
     return f'<span class="badge badge-{b_class}" role="status">{status}</span>'
 
 def render_score_card(title: str, value: str):
-    """Renders a structured, accessible KPI telemetry card."""
     st.markdown(f'<div class="score-card"><h3>{title}</h3><h1>{value}</h1></div>', unsafe_allow_html=True)
 
 def render_setting_row(title: str, description: str):
-    """Renders a labeled setting configuration row with clear descriptive hierarchy."""
     st.markdown(f"**{title}**<br><span style='color:var(--text-muted);font-size:0.9rem;'>{description}</span>", unsafe_allow_html=True)
 
 def render_danger_zone(title: str, description: str):
-    """Renders a visually distinct warning section for destructive administrative controls."""
     st.markdown("---")
     st.markdown(f"### 🚨 Danger Zone")
     st.error(f"**{title}:** {description}")
