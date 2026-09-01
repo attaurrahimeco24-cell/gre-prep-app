@@ -12,7 +12,7 @@ import gre_platform_merged as db_manager
 from modules import question_engine, testing_engine, email_service
 from ui import components, test_views, dashboard_views, admin_views
 
-st.set_page_config(page_title="GRE AI Prep Platform", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="GRE Platform", layout="wide", initial_sidebar_state="expanded")
 components.apply_gre_theme()
 
 def setup_system():
@@ -68,7 +68,7 @@ if not st.session_state.get("authenticated", False):
     st.markdown(
         """
         <div style="text-align: center; padding: 3rem 0 2rem 0;">
-            <h1 style="font-size: 2.5rem; font-weight: 800; color: var(--text-main);">GRE Platform Control Center</h1>
+            <h1 style="font-size: 2.5rem; font-weight: 800; color: var(--text-main);">GRE Platform Access</h1>
             <p style="color: var(--text-muted);">Secure Student & Administration Portal</p>
         </div>
         """, unsafe_allow_html=True
@@ -76,7 +76,7 @@ if not st.session_state.get("authenticated", False):
     
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
-        tab_login, tab_register = st.tabs(["🔒 Secure Login", "📝 Student Registration"])
+        tab_login, tab_register = st.tabs(["🔐 Secure Login", "📝 Create Account"])
         
         with tab_login:
             login_user = st.text_input("Username", key="login_user")
@@ -89,8 +89,7 @@ if not st.session_state.get("authenticated", False):
                     st.session_state["username"] = user_data["username"]
                     st.session_state["user_role"] = user_data["role"]
                     st.session_state["is_verified"] = user_data["is_verified"]
-                    st.session_state["active_page"] = "🏠 Home" if user_data["role"] == "STUDENT" else "📊 Admin Dashboard"
-                    st.toast(f"Welcome back, {user_data['username']}!", icon="✅")
+                    st.session_state["active_page"] = "🧭 Workspace" if user_data["role"] == "STUDENT" else "🎛️ Command Center"
                     st.rerun()
                 else:
                     st.error("Authentication failed. Invalid credentials or inactive account.")
@@ -99,13 +98,18 @@ if not st.session_state.get("authenticated", False):
             reg_user = st.text_input("Choose Username", key="reg_user")
             reg_email = st.text_input("Email Address", key="reg_email")
             reg_pass = st.text_input("Choose Password", type="password", key="reg_pass")
-            if st.button("Register Student Account", type="primary", use_container_width=True):
+            if st.button("Register Account", type="primary", use_container_width=True):
                 if not reg_user or not reg_email or not reg_pass:
                     st.error("All fields are required.")
                 else:
                     try:
                         new_user_id = db_manager.create_user(reg_user, reg_email, reg_pass, "STUDENT", is_verified=0)
-                        email_service.send_verification_email(new_user_id, reg_email, reg_user)
+                        res = email_service.send_verification_email(new_user_id, reg_email, reg_user)
+                        
+                        # Catch the Dev Mode URL if SMTP fails
+                        if res["status"] == "simulated":
+                            st.session_state["dev_verify_url"] = res["url"]
+                            
                         st.success("✅ Account created successfully! Please check your email to verify your account before logging in.")
                     except ValueError as e:
                         st.error(str(e))
@@ -117,7 +121,7 @@ if not st.session_state.get("authenticated", False):
 if not st.session_state.get("is_verified", False):
     st.markdown(
         """
-        <div style='text-align: center; padding: 4rem 0;'>
+        <div style='text-align: center; padding: 4rem 0 2rem 0;'>
             <h1 style='color: var(--primary-color); font-weight: 800;'>✉️ Verify Your Email</h1>
             <p style='color: var(--text-muted); font-size: 1.1rem;'>Account security requires a verified email address.</p>
         </div>
@@ -132,14 +136,24 @@ if not st.session_state.get("is_verified", False):
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
         st.info(f"We've sent a secure verification link to **{email}**.")
+        
+        # SMART DEV MODE UI
+        if "dev_verify_url" in st.session_state:
+            st.warning("⚠️ **DEVELOPMENT MODE:** No SMTP credentials found in Admin settings. To verify your account, click the link below:")
+            # Displaying as a clickable markdown link
+            st.markdown(f"**[Click Here to Verify Account]({st.session_state['dev_verify_url']})**")
+            
         st.markdown("<br>", unsafe_allow_html=True)
         
         btn_c1, btn_c2 = st.columns(2)
         with btn_c1:
-            if st.button("Resend Verification Email", use_container_width=True):
+            if st.button("Resend Email", use_container_width=True):
                 if db_manager.check_verification_cooldown(user_id, 45):
-                    email_service.send_verification_email(user_id, email, st.session_state["username"])
-                    st.success("Verification email sent! Check your inbox (and spam folder).")
+                    res = email_service.send_verification_email(user_id, email, st.session_state["username"])
+                    if res["status"] == "simulated":
+                        st.session_state["dev_verify_url"] = res["url"]
+                    st.success("Verification email sent!")
+                    st.rerun()
                 else:
                     st.error("⏱️ Please wait 45 seconds before requesting another email.")
         with btn_c2:
@@ -152,22 +166,22 @@ if not st.session_state.get("is_verified", False):
 # ======================== PROTECTED APPLICATION AREA ==========================
 # ==============================================================================
 role = st.session_state.get("user_role", "STUDENT")
-admin_id = st.session_state.get("user_id", "system")
 
 st.sidebar.markdown(f"**User:** `{st.session_state['username']}`")
-st.sidebar.markdown(f"**Role:** {components.status_badge(role)}", unsafe_allow_html=True)
+st.sidebar.markdown(f"**Access:** {components.status_badge(role)}", unsafe_allow_html=True)
 st.sidebar.divider()
 
+# PREMIUM ICONS APPLIED HERE
 if role == "STUDENT":
-    nav_options = ["🏠 Home", "🚀 Full GRE Simulation", "📊 Analytics Dashboard"]
+    nav_options = ["🧭 Workspace", "⏱️ Exam Simulator", "📈 Performance Analytics"]
 else:
-    nav_options = ["📊 Admin Dashboard", "📝 Question Bank", "⚙️ Test Configurations", "👥 User Management", "📧 Email Settings", "🛡️ Audit & Security"]
+    nav_options = ["🎛️ Command Center", "📚 Content Library", "⚙️ Exam Tuning", "🧑‍🎓 User Access", "✉️ SMTP Gateway", "🔐 Audit Ledger"]
 
 current_page = st.session_state.get("active_page")
 if current_page not in nav_options:
     current_page = nav_options[0]
 
-page = st.sidebar.radio("Navigation Menu", nav_options, index=nav_options.index(current_page), label_visibility="collapsed")
+page = st.sidebar.radio("Main Menu", nav_options, index=nav_options.index(current_page), label_visibility="collapsed")
 st.session_state["active_page"] = page
 
 st.sidebar.divider()
@@ -177,7 +191,7 @@ if st.sidebar.button("🚪 Secure Logout", use_container_width=True):
 # ------------------------------------------------------------------------------
 # STUDENT ROUTES
 # ------------------------------------------------------------------------------
-if page == "🏠 Home":
+if page == "🧭 Workspace":
     st.markdown("<div style='text-align: center; padding: 1rem 0;'><h1 style='font-weight: 800;'>Elevate Your Future.</h1><p style='color: var(--text-muted);'>Master the modern, shortened GRE with adaptive AI algorithms.</p></div>", unsafe_allow_html=True)
     st.divider()
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -186,29 +200,29 @@ if page == "🏠 Home":
             clear_test_state()
             test_data = testing_engine.initialize_test_session("full_length")
             st.session_state["active_test_id"] = test_data["test_id"]
-            st.session_state["active_page"] = "🚀 Full GRE Simulation"
+            st.session_state["active_page"] = "⏱️ Exam Simulator"
             st.rerun()
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("📊 Open Analytics Dashboard", use_container_width=True):
-            st.session_state["active_page"] = "📊 Analytics Dashboard"
+        if st.button("📈 Open Analytics Dashboard", use_container_width=True):
+            st.session_state["active_page"] = "📈 Performance Analytics"
             st.rerun()
 
-elif page == "🚀 Full GRE Simulation":
+elif page == "⏱️ Exam Simulator":
     if not st.session_state.get("active_test_id"):
-        st.warning("No active exam found. Return home to initialize a new test session.")
+        st.warning("No active exam found. Return to your workspace to initialize a new test session.")
     else:
         test_views.render_exam_simulation(st.session_state["active_test_id"])
 
-elif page == "📊 Analytics Dashboard":
+elif page == "📈 Performance Analytics":
     dashboard_views.render_analytics_dashboard()
 
 # ------------------------------------------------------------------------------
 # ADMIN ROUTES (STRICTLY GUARDED)
 # ------------------------------------------------------------------------------
-elif page == "📊 Admin Dashboard":
+elif page == "🎛️ Command Center":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
         
-    st.markdown("## 🛡️ Admin Control Center")
+    st.markdown("## 🎛️ Command Center")
     st.caption("Central Platform Telemetry & System Health")
     
     with db_manager.db_cursor() as cur:
@@ -238,17 +252,18 @@ elif page == "📊 Admin Dashboard":
     with h2: st.markdown(f"**Auth Gateway:** {components.status_badge('OPERATIONAL')}", unsafe_allow_html=True)
     with h3: st.markdown(f"**Test Engine:** {components.status_badge('ACTIVE')}", unsafe_allow_html=True)
 
-elif page == "📝 Question Bank":
+elif page == "📚 Content Library":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
     admin_views.render_question_bank()
 
-elif page == "⚙️ Test Configurations":
+elif page == "⚙️ Exam Tuning":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
     
-    st.markdown("## ⚙️ Test Configurations")
+    st.markdown("## ⚙️ Exam Tuning")
     st.caption("Configure how simulated GRE tests are timed and adaptively routed.")
     
     current_settings = db_manager.get_all_settings()
+    admin_id = st.session_state.get("user_id", "system")
     
     with st.form("settings_form"):
         st.markdown("### ⏱️ Global Timing Settings")
@@ -299,14 +314,14 @@ elif page == "⚙️ Test Configurations":
         st.toast("Settings restored to factory defaults.", icon="⚠️")
         st.rerun()
 
-elif page == "👥 User Management":
+elif page == "🧑‍🎓 User Access":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
     admin_views.render_user_management()
 
-elif page == "📧 Email Settings":
+elif page == "✉️ SMTP Gateway":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
     admin_views.render_email_settings()
 
-elif page == "🛡️ Audit & Security":
+elif page == "🔐 Audit Ledger":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
     admin_views.render_audit_logs()
