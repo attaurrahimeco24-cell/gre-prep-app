@@ -195,14 +195,17 @@ def db_transaction():
 
 def safe_migrations():
     with db_transaction() as cur:
+        # Phase 1 Migrations
         cur.execute("PRAGMA table_info(users);")
         u_cols = [row["name"] for row in cur.fetchall()]
-        if "is_verified" not in u_cols:
-            cur.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0;")
-        if "failed_login_attempts" not in u_cols:
-            cur.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0;")
-        if "locked_until" not in u_cols:
-            cur.execute("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP;")
+        if "is_verified" not in u_cols: cur.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0;")
+        if "failed_login_attempts" not in u_cols: cur.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0;")
+        if "locked_until" not in u_cols: cur.execute("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP;")
+        
+        # 🔒 PHASE 6 MIGRATION: Link tests to students
+        cur.execute("PRAGMA table_info(tests);")
+        t_cols = [row["name"] for row in cur.fetchall()]
+        if "user_id" not in t_cols: cur.execute("ALTER TABLE tests ADD COLUMN user_id TEXT;")
 
 def seed_default_settings():
     defaults = {
