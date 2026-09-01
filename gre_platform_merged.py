@@ -10,6 +10,15 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Sequence
 
+# 🔒 PHASE 5: Argon2id Cryptographic Engine Initialization
+try:
+    from argon2 import PasswordHasher
+    from argon2.exceptions import VerifyMismatchError
+    ph = PasswordHasher()
+except ImportError:
+    ph = None
+    logging.warning("argon2-cffi not found. Falling back to PBKDF2. Please update requirements.txt.")
+
 # ==============================================================================
 # ============================  CONFIG SECTION  ===============================
 # ==============================================================================
@@ -46,6 +55,8 @@ CREATE TABLE IF NOT EXISTS users (
     role TEXT NOT NULL CHECK(role IN ('STUDENT', 'ADMIN', 'SUPER_ADMIN')),
     is_active INTEGER NOT NULL DEFAULT 1,
     is_verified INTEGER NOT NULL DEFAULT 0,
+    failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+    locked_until TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -115,19 +126,6 @@ CREATE TABLE IF NOT EXISTS test_responses (
     FOREIGN KEY (question_id) REFERENCES questions(question_id) ON DELETE RESTRICT
 );
 
-CREATE TABLE IF NOT EXISTS user_performance (
-    user_id TEXT NOT NULL DEFAULT 'default_user',
-    topic TEXT NOT NULL,
-    subtopic TEXT NOT NULL DEFAULT '',
-    total_attempts INTEGER NOT NULL DEFAULT 0,
-    correct_attempts INTEGER NOT NULL DEFAULT 0,
-    accuracy_pct REAL NOT NULL DEFAULT 0.0,
-    avg_speed_seconds REAL,
-    mastery_rating TEXT,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, topic, subtopic)
-);
-
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
     log_id TEXT PRIMARY KEY,
     admin_id TEXT NOT NULL,
@@ -146,17 +144,6 @@ CREATE TABLE IF NOT EXISTS system_settings (
     updated_by TEXT NOT NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE TABLE IF NOT EXISTS question_versions (
-    version_id TEXT PRIMARY KEY,
-    question_id TEXT NOT NULL,
-    previous_data_json TEXT NOT NULL,
-    new_data_json TEXT NOT NULL,
-    changed_by TEXT NOT NULL,
-    reason TEXT,
-    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (question_id) REFERENCES questions(question_id) ON DELETE CASCADE
-);
 """
 
 # ==============================================================================
@@ -165,8 +152,7 @@ CREATE TABLE IF NOT EXISTS question_versions (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("db_manager")
 
-class DatabaseError(Exception):
-    pass
+class DatabaseError(Exception): pass
 
 _global_conn = None
 
@@ -187,8 +173,7 @@ def db_cursor(commit: bool = False):
     cur = conn.cursor()
     try:
         yield cur
-        if commit:
-            conn.commit()
+        if commit: conn.commit()
     except sqlite3.Error as e:
         conn.rollback()
         raise DatabaseError(f"Database operation failed: {e}") from e
@@ -210,24 +195,21 @@ def db_transaction():
 
 def safe_migrations():
     with db_transaction() as cur:
-        # Schema Evolution for existing databases
-        cur.execute("PRAGMA table_info(questions);")
-        q_cols = [row["name"] for row in cur.fetchall()]
-        if "status" not in q_cols:
-            cur.execute("ALTER TABLE questions ADD COLUMN status TEXT NOT NULL DEFAULT 'APPROVED';")
-            
         cur.execute("PRAGMA table_info(users);")
         u_cols = [row["name"] for row in cur.fetchall()]
         if "is_verified" not in u_cols:
             cur.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0;")
+        if "failed_login_attempts" not in u_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0;")
+        if "locked_until" not in u_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP;")
 
 def seed_default_settings():
     defaults = {
         "quant_time_mins": "47", "verbal_time_mins": "41", "aw_time_mins": "30",
         "adaptive_threshold_hard": "0.75", "adaptive_threshold_medium": "0.40",
-        "maintenance_mode": "false",
-        "smtp_host": "smtp.example.com", "smtp_port": "587",
-        "smtp_user": "noreply@example.com", "smtp_password": "",
+        "smtp_host": "", "smtp_port": "587",
+        "smtp_user": "", "smtp_password": "",
         "smtp_sender_name": "GRE Platform", "require_email_verification": "true"
     }
     try:
@@ -277,34 +259,24 @@ def initialize_database() -> None:
         conn.rollback()
         raise DatabaseError(f"Failed to initialize schema: {e}")
 
-def verify_schema() -> Dict[str, bool]:
-    required_tables = ["questions", "tests", "users", "admin_audit_logs", "system_settings", "question_versions", "email_verification_tokens"]
-    try:
-        with db_cursor() as cur:
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            existing = {row["name"] for row in cur.fetchall()}
-        return {t: (t in existing) for t in required_tables}
-    except DatabaseError:
-        return {t: False for t in required_tables}
-
-def _new_id(prefix: str) -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+def _new_id(prefix: str) -> str: return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 # ==============================================================================
 # ====================  AUTH & VERIFICATION MODULE  ============================
 # ==============================================================================
-def hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
-    if salt is None: salt = secrets.token_bytes(16)
+def hash_legacy_pbkdf2(password: str, salt: bytes) -> tuple[bytes, bytes]:
     pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
     return pwd_hash, salt
 
+def hash_password_current(password: str) -> tuple[bytes, bytes]:
+    if ph:
+        return ph.hash(password).encode('utf-8'), b'argon2'
+    return hash_legacy_pbkdf2(password, secrets.token_bytes(16))
+
 def create_user(username: str, email: str, password: str, role: str = "STUDENT", is_verified: int = 0) -> str:
-    # Super Admins are pre-verified automatically during system generation
-    if role == "SUPER_ADMIN":
-        is_verified = 1
-        
+    if role == "SUPER_ADMIN": is_verified = 1
     user_id = _new_id("USR")
-    pwd_hash, salt = hash_password(password)
+    pwd_hash, salt = hash_password_current(password)
     try:
         with db_cursor(commit=True) as cur:
             cur.execute(
@@ -317,19 +289,56 @@ def create_user(username: str, email: str, password: str, role: str = "STUDENT",
         raise e
 
 def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
-    with db_cursor() as cur:
-        cur.execute("SELECT user_id, username, role, password_hash, salt, is_active, is_verified FROM users WHERE username = ?", (username,))
+    """Strict login verifier with Brute-Force Rate Limiting & Seamless Argon2 Upgrades."""
+    with db_cursor(commit=True) as cur:
+        cur.execute("SELECT user_id, username, role, password_hash, salt, is_active, is_verified, failed_login_attempts, locked_until FROM users WHERE username = ?", (username,))
         user = cur.fetchone()
+        
         if not user or not user["is_active"]: return None
-        test_hash, _ = hash_password(password, user["salt"])
-        if test_hash == user["password_hash"]: 
-            return {
-                "user_id": user["user_id"], 
-                "username": user["username"], 
-                "role": user["role"], 
-                "is_verified": bool(user["is_verified"])
-            }
-        return None
+        
+        # 1. Check Brute-Force Lockout Status
+        if user["locked_until"]:
+            if datetime.now().isoformat() < user["locked_until"]:
+                raise ValueError("🔒 Account locked due to multiple failed login attempts. Please try again in 15 minutes.")
+            else:
+                cur.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = ?", (user["user_id"],))
+
+        stored_hash = user["password_hash"]
+        is_valid = False
+        needs_upgrade = False
+        
+        # 2. Cryptographic Validation
+        if ph and stored_hash.startswith(b'$argon2'):
+            try:
+                ph.verify(stored_hash.decode('utf-8'), password)
+                is_valid = True
+                if ph.check_needs_rehash(stored_hash.decode('utf-8')): needs_upgrade = True
+            except VerifyMismatchError:
+                is_valid = False
+        else:
+            # PBKDF2 Legacy Verification
+            test_hash, _ = hash_legacy_pbkdf2(password, user["salt"])
+            if test_hash == stored_hash:
+                is_valid = True
+                needs_upgrade = True # Old PBKDF2 users will be silently upgraded to Argon2
+
+        # 3. Handle Result & Execute Rolling Upgrade
+        if is_valid:
+            cur.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = ?", (user["user_id"],))
+            if needs_upgrade and ph:
+                new_hash = ph.hash(password).encode('utf-8')
+                cur.execute("UPDATE users SET password_hash = ?, salt = ? WHERE user_id = ?", (new_hash, b'argon2', user["user_id"]))
+                logger.info(f"User {user['user_id']} seamlessly upgraded to Argon2id security.")
+            
+            return {"user_id": user["user_id"], "username": user["username"], "role": user["role"], "is_verified": bool(user["is_verified"])}
+        else:
+            # Increment Failure Counter
+            attempts = user["failed_login_attempts"] + 1
+            lock_time = None
+            if attempts >= 5:
+                lock_time = (datetime.now() + timedelta(minutes=15)).isoformat()
+            cur.execute("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE user_id = ?", (attempts, lock_time, user["user_id"]))
+            return None
 
 def get_all_users() -> List[Dict[str, Any]]:
     with db_cursor() as cur:
@@ -341,63 +350,44 @@ def update_user_access(target_user_id: str, new_role: str, is_active: int, admin
         cur.execute("UPDATE users SET role = ?, is_active = ? WHERE user_id = ?", (new_role, is_active, target_user_id))
         
 def manually_verify_user(target_user_id: str, admin_id: str, reason: str):
-    """Admin override to manually verify an account."""
     with db_transaction() as cur:
         cur.execute("UPDATE users SET is_verified = 1 WHERE user_id = ?", (target_user_id,))
         log_id = _new_id("LOG")
-        cur.execute("INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (log_id, admin_id, "MANUAL_VERIFY", target_user_id, "0", "1", reason))
+        cur.execute("INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)", (log_id, admin_id, "MANUAL_VERIFY", target_user_id, "0", "1", reason))
 
-# --- CRYPTOGRAPHIC EMAIL TOKENS ---
 def create_verification_token(user_id: str, token_hash: str, expires_in_minutes: int = 60) -> None:
-    """Stores a secure token hash for email verification."""
     expires_at = (datetime.now() + timedelta(minutes=expires_in_minutes)).isoformat()
     with db_cursor(commit=True) as cur:
-        # Invalidate any previously pending tokens to prevent token spamming
         cur.execute("UPDATE email_verification_tokens SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL", (user_id,))
-        
         token_id = _new_id("TOK")
-        cur.execute("INSERT INTO email_verification_tokens (token_id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)", 
-                    (token_id, user_id, token_hash, expires_at))
+        cur.execute("INSERT INTO email_verification_tokens (token_id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)", (token_id, user_id, token_hash, expires_at))
 
 def verify_and_use_token(token_hash: str) -> Dict[str, Any]:
-    """Atomically validates a token and marks the user as verified to prevent race conditions."""
     with db_transaction() as cur:
         cur.execute("SELECT token_id, user_id, expires_at, used_at FROM email_verification_tokens WHERE token_hash = ?", (token_hash,))
         row = cur.fetchone()
         
-        if not row:
-            return {"status": "invalid"}
-        if row["used_at"] is not None:
-            return {"status": "used"}
-        if datetime.now().isoformat() > row["expires_at"]:
-            return {"status": "expired"}
+        if not row: return {"status": "invalid"}
+        if row["used_at"] is not None: return {"status": "used"}
+        if datetime.now().isoformat() > row["expires_at"]: return {"status": "expired"}
         
-        # Valid! Atomically mark used and verify user
         cur.execute("UPDATE email_verification_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_id = ?", (row["token_id"],))
         cur.execute("UPDATE users SET is_verified = 1 WHERE user_id = ?", (row["user_id"],))
         return {"status": "valid", "user_id": row["user_id"]}
 
 def check_verification_cooldown(user_id: str, cooldown_seconds: int = 45) -> bool:
-    """Prevents malicious actors from hammering the email provider by enforcing rate limits."""
     with db_cursor() as cur:
         cur.execute("SELECT created_at FROM email_verification_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
         row = cur.fetchone()
-        if not row:
-            return True
-            
-        # Standardize parsing format to ensure cross-platform compatibility
+        if not row: return True
         last_created_str = row["created_at"]
-        if "." in last_created_str:
-            last_created = datetime.strptime(last_created_str, "%Y-%m-%dT%H:%M:%S.%f")
+        
+        if "." in last_created_str: last_created = datetime.strptime(last_created_str, "%Y-%m-%dT%H:%M:%S.%f")
         else:
-            try:
-                last_created = datetime.strptime(last_created_str, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                return True # Fallback if timestamps are weird during migration
+            try: last_created = datetime.strptime(last_created_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError: return True 
                 
-        if (datetime.now() - last_created).total_seconds() < cooldown_seconds:
-            return False
+        if (datetime.now() - last_created).total_seconds() < cooldown_seconds: return False
         return True
 
 # --- ADMIN AUDIT MODULE ---
@@ -481,11 +471,6 @@ def get_all_questions_admin(section_filter: str = "All", status_filter: str = "A
         results.append(d)
     return results
 
-def update_question(question_id: str, new_data: Dict[str, Any], admin_id: str, reason: str) -> None:
-    options_json = json.dumps(new_data.get("options")) if new_data.get("options") is not None else None
-    with db_transaction() as cur:
-        cur.execute("""UPDATE questions SET section = ?, domain = ?, topic = ?, question_type = ?, difficulty_level = ?, question_text = ?, options_json = ?, correct_answer = ?, explanation = ?, status = ? WHERE question_id = ?""", (new_data["section"], new_data["domain"], new_data["topic"], new_data["question_type"], int(new_data["difficulty_level"]), new_data["question_text"], options_json, new_data["correct_answer"], new_data["explanation"], new_data["status"], question_id))
-
 def count_questions() -> int:
     with db_cursor() as cur:
         cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
@@ -520,15 +505,3 @@ def complete_session_section(section_instance_id: str) -> None:
 def complete_test(test_id: str) -> None:
     with db_cursor(commit=True) as cur:
         cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
-
-def health_check() -> Dict[str, Any]:
-    status = {"db_reachable": False, "schema_ok": False, "question_count": 0, "errors": []}
-    try:
-        initialize_database()
-        status["db_reachable"] = True
-        tables = verify_schema()
-        status["schema_ok"] = all(tables.values())
-        status["question_count"] = count_questions()
-    except Exception as e:
-        status["errors"].append(str(e))
-    return status
