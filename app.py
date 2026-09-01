@@ -81,21 +81,24 @@ if not st.session_state.get("authenticated", False):
     with col2:
         tab_login, tab_register = st.tabs(["🔐 Secure Login", "📝 Create Account"])
         
-        with tab_login:
+      with tab_login:
             login_user = st.text_input("Username", key="login_user")
             login_pass = st.text_input("Password", type="password", key="login_pass")
             if st.button("Authenticate", type="primary", use_container_width=True):
-                user_data = db_manager.verify_login(login_user, login_pass)
-                if user_data:
-                    st.session_state["authenticated"] = True
-                    st.session_state["user_id"] = user_data["user_id"]
-                    st.session_state["username"] = user_data["username"]
-                    st.session_state["user_role"] = user_data["role"]
-                    st.session_state["is_verified"] = user_data["is_verified"]
-                    st.session_state["active_page"] = "🧭 Workspace" if user_data["role"] == "STUDENT" else "🎛️ Command Center"
-                    st.rerun()
-                else:
-                    st.error("Authentication failed. Invalid credentials or inactive account.")
+                try:
+                    user_data = db_manager.verify_login(login_user, login_pass)
+                    if user_data:
+                        st.session_state["authenticated"] = True
+                        st.session_state["user_id"] = user_data["user_id"]
+                        st.session_state["username"] = user_data["username"]
+                        st.session_state["user_role"] = user_data["role"]
+                        st.session_state["is_verified"] = user_data["is_verified"]
+                        st.session_state["active_page"] = "🧭 Workspace" if user_data["role"] == "STUDENT" else "🎛️ Command Center"
+                        st.rerun()
+                    else:
+                        st.error("Authentication failed. Invalid credentials or inactive account.")
+                except ValueError as e:
+                    st.error(str(e)) # Display the 15-minute Lockout Security Alert
                     
         with tab_register:
             reg_user = st.text_input("Choose Username", key="reg_user")
