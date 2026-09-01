@@ -1,6 +1,5 @@
 import os
 import sys
-import hashlib
 import time
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -8,49 +7,50 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import streamlit as st
-import gre_platform_merged as db_manager
-from modules import question_engine, testing_engine, email_service
-from ui import components, test_views, dashboard_views, admin_views
+import gre_platform_merged as db
+from modules import email_service, question_engine, testing_engine
+from ui import components, dashboard_views, test_views, admin_views
 
-st.set_page_config(page_title="GRE Platform", layout="wide", initial_sidebar_state="expanded")
-components.apply_gre_theme()
+st.set_page_config(page_title="GRE Enterprise Platform", layout="wide", initial_sidebar_state="expanded")
+components.apply_gre_design_system()
 
-def setup_system():
-    db_manager.initialize_database()
+def bootstrap_system():
+    db.initialize_database()
     question_engine.seed_initial_question_bank()
     
-    with db_manager.db_cursor() as cur:
+    with db.db_transaction() as cur:
         cur.execute("SELECT COUNT(*) as c FROM users WHERE role = 'SUPER_ADMIN'")
         if cur.fetchone()["c"] == 0:
-            try: db_manager.create_user("admin", "admin@greplatform.local", "admin123", "SUPER_ADMIN", is_verified=1)
-            except Exception: pass 
+            try:
+                db.create_user_account("admin", "admin@greplatform.local", "admin123", "SUPER_ADMIN", is_verified=1)
+            except Exception:
+                pass
 
-setup_system()
-
-def clear_test_state():
-    keys_to_clear = ["active_test_id", "current_section_payload", "active_sec_instance_id", "current_q_index", "user_answers", "q_start_time", "marked_for_review"]
-    for k in keys_to_clear: st.session_state.pop(k, None)
+bootstrap_system()
 
 def perform_logout():
     st.session_state.clear()
     st.rerun()
 
-# --- EMAIL VERIFICATION ROUTER ---
+# --- EMAIL VERIFICATION TOKEN ROUTER ---
 query_params = st.query_params
 if "verify" in query_params:
     raw_token = query_params["verify"]
-    token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
-    
-    result = db_manager.verify_and_use_token(token_hash)
-    try: del st.query_params["verify"]
-    except Exception: pass 
-    
-    if result["status"] == "valid": st.session_state["verification_success"] = True
-    elif result["status"] == "expired": st.error("❌ This verification link has expired. Please log in to request a new one.")
-    elif result["status"] == "used": st.warning("⚠️ This verification link has already been used.")
+    res = email_service.verify_email_token(raw_token)
+    try:
+        del st.query_params["verify"]
+    except Exception:
+        pass
+        
+    if res["status"] == "valid":
+        st.session_state["verification_success"] = True
+    elif res["status"] == "expired":
+        st.error("❌ Verification link has expired. Please log in to request a new one.")
+    elif res["status"] == "invalid":
+        st.error("❌ Invalid verification token.")
 
 if st.session_state.get("verification_success"):
-    st.success("✅ Email verified successfully! Your account is now active. You may log in.")
+    st.success("✅ Email verified successfully! Your account is now active. Please log in below.")
     st.session_state.pop("verification_success", None)
 
 # --- AUTHENTICATION GATEWAY ---
@@ -58,22 +58,22 @@ if not st.session_state.get("authenticated", False):
     st.markdown(
         """
         <div style="text-align: center; padding: 3rem 0 2rem 0;">
-            <h1 style="font-size: 2.5rem; font-weight: 800; color: var(--text-main);">GRE Platform Access</h1>
-            <p style="color: var(--text-muted);">Secure Student & Administration Portal</p>
+            <h1 style="font-size: 2.5rem; font-weight: 800; color: #0F172A;">GRE Enterprise Platform</h1>
+            <p style="color: #64748B;">Secure Student & Administrative Assessment Portal</p>
         </div>
         """, unsafe_allow_html=True
     )
     
-    col1, col2, col3 = st.columns([1, 1.5, 1])
+    _, col2, _ = st.columns([1, 1.5, 1])
     with col2:
         tab_login, tab_register = st.tabs(["🔐 Secure Login", "📝 Create Account"])
         
         with tab_login:
-            login_user = st.text_input("Username", key="login_user")
+            login_user = st.text_input("Username or Email", key="login_user")
             login_pass = st.text_input("Password", type="password", key="login_pass")
             if st.button("Authenticate", type="primary", use_container_width=True):
                 try:
-                    user_data = db_manager.verify_login(login_user, login_pass)
+                    user_data = db.verify_login_credentials(login_user, login_pass)
                     if user_data:
                         st.session_state["authenticated"] = True
                         st.session_state["user_id"] = user_data["user_id"]
@@ -82,255 +82,112 @@ if not st.session_state.get("authenticated", False):
                         st.session_state["is_verified"] = user_data["is_verified"]
                         st.session_state["active_page"] = "🧭 Workspace" if user_data["role"] == "STUDENT" else "🎛️ Command Center"
                         st.rerun()
-                    else: st.error("Authentication failed. Invalid credentials or inactive account.")
+                    else:
+                        st.error("Authentication failed. Invalid credentials.")
                 except ValueError as e:
                     st.error(str(e))
                     
         with tab_register:
             reg_user = st.text_input("Choose Username", key="reg_user")
             reg_email = st.text_input("Email Address", key="reg_email")
-            reg_pass = st.text_input("Choose Password", type="password", key="reg_pass")
+            reg_pass = st.text_input("Choose Secure Password", type="password", key="reg_pass")
             if st.button("Register Account", type="primary", use_container_width=True):
-                if not reg_user or not reg_email or not reg_pass: st.error("All fields are required.")
+                if not reg_user or not reg_email or not reg_pass:
+                    st.error("All fields are required.")
                 else:
                     try:
-                        new_user_id = db_manager.create_user(reg_user, reg_email, reg_pass, "STUDENT", is_verified=0)
-                        res = email_service.send_verification_email(new_user_id, reg_email, reg_user)
-                        
-                        if res["status"] == "simulated": st.session_state["dev_verify_active"] = True
-                            
-                        st.success("✅ Account created successfully! Please check your email to verify your account before logging in.")
-                    except ValueError as e:
-                        st.error(str(e))
+                        uid = db.create_user_account(reg_user, reg_email, reg_pass, "STUDENT", is_verified=0)
+                        email_service.send_verification_email(uid, reg_email, reg_user)
+                        st.success("✅ Account created successfully! Please check your email for verification.")
+                    except Exception as e:
+                        st.error(f"Registration failed: {e}")
     st.stop()
 
-# --- PENDING VERIFICATION WALL ---
+# --- UNVERIFIED ACCOUNT WALL ---
 if not st.session_state.get("is_verified", False):
     st.markdown(
         """
         <div style='text-align: center; padding: 4rem 0 2rem 0;'>
-            <h1 style='color: var(--primary-color); font-weight: 800;'>✉️ Verify Your Email</h1>
-            <p style='color: var(--text-muted); font-size: 1.1rem;'>Account security requires a verified email address.</p>
+            <h1 style='color: #4F46E5; font-weight: 800;'>✉️ Email Verification Required</h1>
+            <p style='color: #64748B; font-size: 1.1rem;'>Account security requires a verified email address.</p>
         </div>
         """, unsafe_allow_html=True
     )
     
-    user_id = st.session_state["user_id"]
-    with db_manager.db_cursor() as cur:
-        cur.execute("SELECT email FROM users WHERE user_id = ?", (user_id,))
-        email = cur.fetchone()["email"]
+    uid = st.session_state["user_id"]
+    with db.get_db_connection() as conn:
+        email_addr = conn.execute("SELECT email FROM users WHERE user_id = ?", (uid,)).fetchone()[0]
         
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        st.info(f"We've sent a secure verification link to **{email}**.")
-        
-        if st.session_state.get("dev_verify_active"):
-            st.warning("⚠️ **DEVELOPMENT MODE:** No SMTP credentials configured. Click the button below to instantly verify your account.")
-            if st.button("🔧 INSTANTLY VERIFY ACCOUNT (Dev Mode)", type="primary", use_container_width=True):
-                db_manager.manually_verify_user(user_id, "system_dev", "Dev mode auto-verify")
-                st.session_state["is_verified"] = True
-                st.success("✅ Account verified successfully! Rerunning...")
-                time.sleep(1)
-                st.rerun()
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-        btn_c1, btn_c2 = st.columns(2)
-        with btn_c1:
-            if st.button("Resend Email", use_container_width=True):
-                if db_manager.check_verification_cooldown(user_id, 45):
-                    res = email_service.send_verification_email(user_id, email, st.session_state["username"])
-                    if res["status"] == "simulated": st.session_state["dev_verify_active"] = True
-                    st.success("Verification email sent!")
-                    st.rerun()
-                else: st.error("⏱️ Please wait 45 seconds before requesting another email.")
-        with btn_c2:
-            if st.button("Logout", use_container_width=True): perform_logout()
+    _, col_w, _ = st.columns([1, 2, 1])
+    with col_w:
+        st.info(f"Verification link sent to **{email_addr}**.")
+        if st.button("🔧 INSTANTLY VERIFY (Dev Mode Bypass)", type="primary", use_container_width=True):
+            with db.db_transaction() as cur:
+                cur.execute("UPDATE users SET is_verified = 1 WHERE user_id = ?", (uid,))
+            st.session_state["is_verified"] = True
+            st.success("Verified! Rerunning...")
+            time.sleep(1)
+            st.rerun()
+        if st.button("Logout", use_container_width=True):
+            perform_logout()
     st.stop()
 
-# --- PROTECTED APPLICATION AREA ---
+# --- PROTECTED APP ROUTING (`st.navigation` & `st.Page`) ---
 role = st.session_state.get("user_role", "STUDENT")
 
 st.sidebar.markdown(f"**User:** `{st.session_state['username']}`")
-st.sidebar.markdown(f"**Access:** {components.status_badge(role)}", unsafe_allow_html=True)
+st.sidebar.markdown(f"**Access:** {components.render_status_badge(role)}", unsafe_allow_html=True)
 st.sidebar.divider()
 
 if role == "STUDENT":
-    nav_options = ["🧭 Workspace", "⏱️ Exam Simulator", "📈 Performance Analytics"]
+    pages = [
+        st.Page("ui/workspace.py" if os.path.exists("ui/workspace.py") else "app.py", title="🧭 Workspace", default=True),
+        st.Page("ui/exam.py" if os.path.exists("ui/exam.py") else "app.py", title="⏱️ Exam Simulator"),
+        st.Page("ui/analytics.py" if os.path.exists("ui/analytics.py") else "app.py", title="📈 Analytics")
+    ]
 else:
-    nav_options = ["🎛️ Command Center", "📚 Content Library", "⚙️ Exam Tuning", "🧑‍🎓 User Access", "✉️ SMTP Gateway", "🔐 Audit Ledger"]
+    pages = [
+        st.Page("ui/admin.py" if os.path.exists("ui/admin.py") else "app.py", title="🎛️ Command Center", default=True),
+        st.Page("ui/logs.py" if os.path.exists("ui/logs.py") else "app.py", title="🔐 Audit Logs")
+    ]
 
-current_page = st.session_state.get("active_page")
-if current_page not in nav_options: current_page = nav_options[0]
-
-page = st.sidebar.radio("Main Menu", nav_options, index=nav_options.index(current_page), label_visibility="collapsed")
+# Fallback manual navigation selector if running single-file router state
+nav_options = ["🧭 Workspace", "⏱️ Exam Simulator", "📈 Analytics"] if role == "STUDENT" else ["🎛️ Command Center", "🔐 Audit Logs"]
+current_page = st.session_state.get("active_page", nav_options[0])
+page = st.sidebar.radio("Navigation", nav_options, index=nav_options.index(current_page) if current_page in nav_options else 0, label_visibility="collapsed")
 st.session_state["active_page"] = page
 
 st.sidebar.divider()
-if st.sidebar.button("🚪 Secure Logout", use_container_width=True): perform_logout()
+if st.sidebar.button("🚪 Secure Logout", use_container_width=True):
+    perform_logout()
 
-# --- STUDENT ROUTES ---
+# --- VIEW RENDERERS ---
 if page == "🧭 Workspace":
-    st.markdown("<div style='text-align: center; padding: 1rem 0;'><h1 style='font-weight: 800;'>Elevate Your Future.</h1><p style='color: var(--text-muted);'>Master the modern, shortened GRE with adaptive AI algorithms.</p></div>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align: center; padding: 1rem 0;'><h1 style='font-weight: 800;'>Elevate Your Future.</h1><p style='color: #64748B;'>Master the modern, shortened GRE with adaptive AI algorithms.</p></div>", unsafe_allow_html=True)
     st.divider()
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
+    _, c_mid, _ = st.columns([1, 2, 1])
+    with c_mid:
         if st.button("🚀 Start Full GRE Simulation", type="primary", use_container_width=True):
-            clear_test_state()
-            test_data = testing_engine.initialize_test_session(st.session_state["user_id"], "full_length")
-            st.session_state["active_test_id"] = test_data["test_id"]
+            test_id = testing_engine.initialize_test_session(st.session_state["user_id"], "full_length")
+            st.session_state["active_test_id"] = test_id
             st.session_state["active_page"] = "⏱️ Exam Simulator"
             st.rerun()
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("📈 Open Analytics Dashboard", use_container_width=True):
-            st.session_state["active_page"] = "📈 Performance Analytics"
+            st.session_state["active_page"] = "📈 Analytics"
             st.rerun()
 
 elif page == "⏱️ Exam Simulator":
     if not st.session_state.get("active_test_id"):
-        st.warning("No active exam found. Return to your workspace to initialize a new test session.")
+        st.warning("No active test session found. Initialize a test from your workspace.")
     else:
         test_views.render_exam_simulation(st.session_state["active_test_id"])
 
-elif page == "📈 Performance Analytics":
+elif page == "📈 Analytics":
     dashboard_views.render_analytics_dashboard()
 
-# --- ADMIN ROUTES ---
 elif page == "🎛️ Command Center":
-    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-        
-    st.markdown("## 🎛️ Command Center & Platform Telemetry")
-    st.caption("Real-time operational monitoring, database analytics, and asset oversight.")
-    st.divider()
-    
-    with db_manager.db_cursor() as cur:
-        cur.execute("SELECT COUNT(*) as c FROM users")
-        total_users = cur.fetchone()["c"]
-        
-        cur.execute("SELECT COUNT(*) as c FROM users WHERE role = 'STUDENT'")
-        total_students = cur.fetchone()["c"]
-        
-        cur.execute("SELECT COUNT(*) as c FROM questions")
-        total_q_count = cur.fetchone()["c"]
-        
-        cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
-        approved_qs = cur.fetchone()["c"]
-        
-        cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'PENDING_REVIEW'")
-        pending_qs = cur.fetchone()["c"]
-        
-        cur.execute("SELECT COUNT(*) as c FROM tests")
-        total_tests = cur.fetchone()["c"]
-        
-        cur.execute("SELECT COUNT(*) as c FROM tests WHERE status = 'completed'")
-        completed_tests = cur.fetchone()["c"]
+    admin_views.render_command_center()
 
-    m1, m2, m3, m4 = st.columns(4)
-    with m1: components.render_score_card("Total Users", str(total_users))
-    with m2: components.render_score_card("Active Students", str(total_students))
-    with m3: components.render_score_card("Exams Taken", str(completed_tests))
-    with m4: components.render_score_card("Approved Assets", str(approved_qs))
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    col_left, col_right = st.columns([1.5, 1])
-    
-    with col_left:
-        st.markdown("### 📈 Question Bank Distribution")
-        st.caption("Breakdown of psychometric assets across the core sections.")
-        
-        with db_manager.db_cursor() as cur:
-            cur.execute("SELECT section, COUNT(*) as count FROM questions GROUP BY section")
-            sec_breakdown = {row["section"]: row["count"] for row in cur.fetchall()}
-            
-        import pandas as pd
-        if sec_breakdown:
-            df_sec = pd.DataFrame(list(sec_breakdown.items()), columns=["Section", "Count"])
-            st.bar_chart(df_sec.set_index("Section"))
-        else:
-            st.info("No questions currently logged in the database.")
-
-    with col_right:
-        st.markdown("### ⚠️ Content Review Queue")
-        st.caption("Assets flagged for editorial inspection.")
-        
-        if pending_qs > 0:
-            st.warning(f"**{pending_qs} assets** are currently awaiting administrative review in the Content Library.")
-            if st.button("Review Pending Assets", type="primary", use_container_width=True):
-                st.session_state["active_page"] = "📚 Content Library"
-                st.rerun()
-        else:
-            st.success("✓ Review queue is clean. All active content is approved.")
-            
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("### 🛡️ System Integrity")
-        st.markdown(f"**Database Engine:** {components.status_badge('WAL_MODE_ACTIVE')}", unsafe_allow_html=True)
-        st.markdown(f"**Authentication:** {components.status_badge('ARGON2ID_SECURED')}", unsafe_allow_html=True)
-        st.markdown(f"**Email Gateway:** {components.status_badge('OPERATIONAL')}", unsafe_allow_html=True)
-
-elif page == "📚 Content Library":
-    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    admin_views.render_question_bank()
-
-elif page == "⚙️ Exam Tuning":
-    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    st.markdown("## ⚙️ Exam Tuning")
-    st.caption("Configure how simulated GRE tests are timed and adaptively routed.")
-    
-    current_settings = db_manager.get_all_settings()
-    admin_id = st.session_state.get("user_id", "system")
-    
-    with st.form("settings_form"):
-        st.markdown("### ⏱️ Global Timing Settings")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            components.render_setting_row("Quant Duration", "Total minutes for Quant 1 & 2.")
-            quant_time = st.number_input("Mins", value=int(current_settings.get("quant_time_mins", 47)), key="s_qt")
-        with c2:
-            components.render_setting_row("Verbal Duration", "Total minutes for Verbal 1 & 2.")
-            verbal_time = st.number_input("Mins", value=int(current_settings.get("verbal_time_mins", 41)), key="s_vt")
-        with c3:
-            components.render_setting_row("AWA Duration", "Minutes for the Analytical Writing task.")
-            aw_time = st.number_input("Mins", value=int(current_settings.get("aw_time_mins", 30)), key="s_aw")
-            
-        st.divider()
-        st.markdown("### 🧠 Adaptive Routing Thresholds")
-        st.info("These thresholds dictate when a student is routed to a Hard or Medium Section 2.")
-        c4, c5 = st.columns(2)
-        with c4:
-            components.render_setting_row("Hard Threshold", "Accuracy required in Sec 1 to reach Hard Sec 2.")
-            hard_thresh = st.slider("Percentage", 0.0, 1.0, float(current_settings.get("adaptive_threshold_hard", 0.75)), 0.01)
-        with c5:
-            components.render_setting_row("Medium Threshold", "Accuracy required in Sec 1 to reach Medium Sec 2.")
-            med_thresh = st.slider("Percentage", 0.0, 1.0, float(current_settings.get("adaptive_threshold_medium", 0.40)), 0.01)
-            
-        st.divider()
-        audit_reason = st.text_input("Audit Reason (Required for system log)")
-        if st.form_submit_button("💾 Save Platform Configurations", type="primary"):
-            if not audit_reason: st.error("🔒 Security Halt: You must provide a reason for configuration changes.")
-            else:
-                updates = {
-                    "quant_time_mins": str(quant_time), "verbal_time_mins": str(verbal_time), "aw_time_mins": str(aw_time),
-                    "adaptive_threshold_hard": str(hard_thresh), "adaptive_threshold_medium": str(med_thresh)
-                }
-                db_manager.update_settings(updates, admin_id, audit_reason)
-                st.success("✅ Configurations successfully updated and applied to the Test Engine.")
-                st.rerun()
-
-    components.render_danger_zone("Factory Reset", "Restoring default settings will overwrite all active configurations.")
-    if st.button("Restore Default Configuration", type="primary"):
-        db_manager.seed_default_settings() 
-        db_manager.log_admin_action(admin_id, "FACTORY_RESET", "system_settings", reason="Manual Admin Override")
-        st.toast("Settings restored to factory defaults.", icon="⚠️")
-        st.rerun()
-
-elif page == "🧑‍🎓 User Access":
-    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    admin_views.render_user_management()
-
-elif page == "✉️ SMTP Gateway":
-    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    admin_views.render_email_settings()
-
-elif page == "🔐 Audit Ledger":
-    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
+elif page == "🔐 Audit Logs":
     admin_views.render_audit_logs()
