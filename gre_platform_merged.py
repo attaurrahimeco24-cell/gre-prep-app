@@ -216,20 +216,26 @@ def seed_default_settings():
         "randomize_questions": "true",
         "maintenance_mode": "false"
     }
-    with db_transaction() as cur:
-        cur.execute("SELECT COUNT(*) as c FROM system_settings")
-        if cur.fetchone()["c"] == 0:
-            for k, v in defaults.items():
-                cur.execute("INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES (?, ?, 'SYSTEM')", (k, v))
+    try:
+        with db_transaction() as cur:
+            cur.execute("SELECT COUNT(*) as c FROM system_settings")
+            if cur.fetchone()["c"] == 0:
+                for k, v in defaults.items():
+                    cur.execute("INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES (?, ?, 'SYSTEM')", (k, v))
+    except DatabaseError:
+        pass # Fails safely if table isn't built yet
 
 def sync_settings_to_globals():
-    with db_cursor() as cur:
-        cur.execute("SELECT setting_key, setting_value FROM system_settings")
-        rows = cur.fetchall()
-    settings = {r["setting_key"]: r["setting_value"] for r in rows}
-    
-    if "adaptive_threshold_hard" in settings: ADAPTIVE_THRESHOLDS["hard"] = float(settings["adaptive_threshold_hard"])
-    if "adaptive_threshold_medium" in settings: ADAPTIVE_THRESHOLDS["medium"] = float(settings["adaptive_threshold_medium"])
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT setting_key, setting_value FROM system_settings")
+            rows = cur.fetchall()
+        settings = {r["setting_key"]: r["setting_value"] for r in rows}
+        
+        if "adaptive_threshold_hard" in settings: ADAPTIVE_THRESHOLDS["hard"] = float(settings["adaptive_threshold_hard"])
+        if "adaptive_threshold_medium" in settings: ADAPTIVE_THRESHOLDS["medium"] = float(settings["adaptive_threshold_medium"])
+    except DatabaseError:
+        pass
 
 def get_all_settings() -> Dict[str, str]:
     with db_cursor() as cur:
@@ -305,8 +311,11 @@ def create_user(username: str, email: str, password: str, role: str = "STUDENT")
                 (user_id, username, email, pwd_hash, salt, role)
             )
         return user_id
-    except sqlite3.IntegrityError:
-        raise ValueError("Username or email already exists.")
+    except DatabaseError as e:
+        # Check if the error was caused by a duplicate email/username
+        if "UNIQUE constraint failed" in str(e):
+            raise ValueError("Username or email already exists. Please choose another.")
+        raise e
 
 def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
     with db_cursor() as cur:
@@ -377,7 +386,7 @@ def insert_question(q: Dict[str, Any]) -> str:
     except DatabaseError as e:
         if "UNIQUE constraint failed" in str(e):
             raise DatabaseError(f"Question ID '{q['question_id']}' already exists.")
-        raise
+        raise e
     return q["question_id"]
 
 def get_question_by_id(question_id: str) -> Optional[Dict[str, Any]]:
@@ -485,38 +494,6 @@ def count_questions() -> int:
     with db_cursor() as cur:
         cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
         return cur.fetchone()["c"]
-
-# --- CBT TEST ENGINE MODULE ---
-def create_test(test_type: str) -> str:
-    test_id = _new_id("TEST")
-    with db_cursor(commit=True) as cur:
-        cur.execute("INSERT INTO tests (test_id, test_type, start_timestamp, status) VALUES (?, ?, ?, 'in_progress')", (test_id, test_type, datetime.now().isoformat()))
-    return test_id
-
-def create_session_section(test_id: str, section_key: str, difficulty_tier: Optional[str] = None) -> str:
-    section_instance_id = _new_id("SEC")
-    time_allotted = SECTION_STRUCTURE[section_key]["time_seconds"]
-    with db_cursor(commit=True) as cur:
-        cur.execute(
-            """INSERT INTO session_sections (section_instance_id, test_id, section_key, difficulty_tier, time_allotted_seconds, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')""",
-            (section_instance_id, test_id, section_key, difficulty_tier, time_allotted),
-        )
-    return section_instance_id
-
-def start_session_section(section_instance_id: str) -> float:
-    start_ts = time.time()
-    with db_cursor(commit=True) as cur:
-        cur.execute("UPDATE session_sections SET status = 'in_progress', section_start_timestamp = ? WHERE section_instance_id = ?", (start_ts, section_instance_id))
-    return start_ts
-
-def complete_session_section(section_instance_id: str) -> None:
-    with db_cursor(commit=True) as cur:
-        cur.execute("UPDATE session_sections SET status = 'completed', section_end_timestamp = ? WHERE section_instance_id = ?", (time.time(), section_instance_id))
-
-def complete_test(test_id: str) -> None:
-    with db_cursor(commit=True) as cur:
-        cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
 
 def health_check() -> Dict[str, Any]:
     status = {"db_reachable": False, "schema_ok": False, "question_count": 0, "errors": []}
