@@ -1,25 +1,23 @@
 import streamlit as st
-import pandas as pd
-from modules import analytics_engine
-from ui import components
+from modules.analytics_engine import get_student_performance_telemetry
+from ui.components import render_score_card
 
 def render_analytics_dashboard():
     user_id = st.session_state["user_id"]
-    data = analytics_engine.get_student_dashboard_data(user_id)
+    data = get_student_performance_telemetry(user_id)
     
     st.markdown("## 📈 Performance Analytics & Diagnostics")
-    st.caption("Review your historical exam metrics, domain proficiency, and AI recommendations.")
+    st.caption("Review historical exam metrics, domain proficiency, and AI recommendations.")
     st.divider()
     
     if data["total_tests"] == 0:
         st.info("No completed exam sessions found. Complete a test in your workspace to unlock performance telemetry.")
         return
 
-    m1, m2, m3, m4 = st.columns(4)
-    with m1: components.render_score_card("Tests Completed", str(data["total_tests"]))
-    with m2: components.render_score_card("Total Answered", str(data["total_answered"]))
-    with m3: components.render_score_card("Overall Accuracy", f"{round(data['accuracy'], 1)}%")
-    with m4: components.render_score_card("Avg Time / Q", f"{round(data['avg_time'], 1)}s")
+    m1, m2, m3 = st.columns(3)
+    with m1: render_score_card("Tests Completed", str(data["total_tests"]))
+    with m2: render_score_card("Total Answered", str(data["total_answered"]))
+    with m3: render_score_card("Overall Accuracy", f"{round(data['accuracy'], 1)}%")
 
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
@@ -37,4 +35,4 @@ def render_analytics_dashboard():
             st.warning(f"**Focus Area Detected:** Your accuracy in **{data['weakest_domain']}** is currently your lowest at **{round(data['lowest_acc'], 1)}%**.")
             st.markdown("**Recommended Action:** Allocate 45 minutes today to targeted practice sets focusing on core formulas and foundational principles in this domain.")
         else:
-            st.success("✓ Excellent performance across all tested domains! Keep up the consistent practice.")
+            st.success("✓ Excellent performance across all tested domains!")
