@@ -10,25 +10,18 @@ import gre_platform_merged as db_manager
 logger = logging.getLogger("email_service")
 
 def generate_secure_token() -> tuple[str, str]:
-    """Generates a raw token for the URL and a hashed version for the DB."""
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
     return raw_token, token_hash
 
-def send_verification_email(user_id: str, to_email: str, username: str) -> bool:
+def send_verification_email(user_id: str, to_email: str, username: str) -> dict:
     settings = db_manager.get_all_settings()
     
-    # 1. Generate Cryptographic Token
     raw_token, token_hash = generate_secure_token()
-    
-    # 2. Store Hash in DB (expires in 60 mins)
     db_manager.create_verification_token(user_id, token_hash, expires_in_minutes=60)
     
-    # 3. Construct Verification URL (Resolves automatically via query parameter)
-    # Using relative parameter formatting for Streamlit Cloud compatibility
     verify_url = f"/?verify={raw_token}"
     
-    # 4. Construct Premium HTML Email Template
     sender_name = settings.get("smtp_sender_name", "GRE Platform")
     sender_email = settings.get("smtp_user", "noreply@example.com")
     
@@ -47,25 +40,19 @@ def send_verification_email(user_id: str, to_email: str, username: str) -> bool:
                 <a href="{verify_url}" style="background-color: #4F46E5; color: #FFFFFF; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px; display: inline-block;">VERIFY EMAIL ADDRESS</a>
             </div>
             <p style="font-size: 14px; color: #64748B; margin-bottom: 8px;">⏱️ This secure link expires in 60 minutes.</p>
-            <p style="font-size: 14px; color: #64748B; margin-top: 0;">If you did not create this account, you can safely ignore this email.</p>
-        </div>
-        <div style="background-color: #F8FAFC; padding: 20px; text-align: center; border-top: 1px solid #E2E8F0;">
-            <p style="font-size: 12px; color: #94A3B8; margin: 0;">&copy; {datetime.now().year} {sender_name}. All rights reserved.</p>
         </div>
     </div>
     """
     
-    # 5. Connect to SMTP
     host = settings.get("smtp_host", "")
     port_str = settings.get("smtp_port", "587")
     port = int(port_str) if port_str.isdigit() else 587
     password = settings.get("smtp_password", "")
     
-    # FAILSAFE: If SMTP is not yet configured, simulate the email in the backend logs
+    # SMART DEV MODE: If SMTP is missing, return the URL to the UI so the user isn't locked out.
     if not host or not password:
         logger.warning(f"SMTP NOT CONFIGURED. Simulated email to {to_email}.")
-        print(f"\n{'='*70}\n[SIMULATED EMAIL DISPATCH]\nTO: {to_email}\nVERIFICATION URL (Copy this into your browser):\n{verify_url}\n{'='*70}\n")
-        return True
+        return {"status": "simulated", "url": verify_url}
         
     try:
         msg = MIMEMultipart("alternative")
@@ -78,7 +65,7 @@ def send_verification_email(user_id: str, to_email: str, username: str) -> bool:
             server.starttls()
             server.login(sender_email, password)
             server.send_message(msg)
-        return True
+        return {"status": "sent"}
     except Exception as e:
         logger.error(f"SMTP Delivery Failed: {e}")
-        return False
+        return {"status": "error", "message": str(e)}
