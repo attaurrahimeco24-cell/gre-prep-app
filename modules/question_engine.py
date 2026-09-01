@@ -4,9 +4,11 @@ import gre_platform_merged as db
 def seed_initial_question_bank():
     with db.db_transaction() as cur:
         cur.execute("SELECT COUNT(*) as c FROM questions")
-        if cur.fetchone()["c"] >= 5:
+        current_count = cur.fetchone()["c"]
+        if current_count >= 2000:
             return
 
+        # Core seed baseline
         questions = [
             (
                 "Q1", "Quantitative", "Algebra", "Linear Equations", "Multiple Choice", 2,
@@ -53,7 +55,24 @@ def seed_initial_question_bank():
             )
         ]
 
+        # Procedurally expand to 2,000 items for testing performance and analytics
+        domains = [("Quantitative", "Algebra"), ("Quantitative", "Geometry"), ("Quantitative", "Arithmetic"), ("Verbal", "Text Completion"), ("Verbal", "Reading Comprehension")]
+        
+        for i in range(current_count + 1, 2001):
+            dom, top = domains[i % len(domains)]
+            q_id = f"GEN_{i}"
+            sec = dom
+            q_type = "Multiple Choice" if dom == "Quantitative" else "Text Completion"
+            diff = (i % 3) + 1
+            text = f"Sample generated GRE {dom} question #{i} concerning {top} principles."
+            options = json.dumps([f"Option A{i}", f"Option B{i}", f"Option C{i}", f"Option D{i}", f"Correct Answer {i}"])
+            correct = f"Correct Answer {i}"
+            explanation = f"Detailed step-by-step solution breakdown for generated asset {i}."
+            svg = "<svg width='150' height='100'><circle cx='75' cy='50' r='40' fill='#E2E8F0'/></svg>" if top == "Geometry" else None
+            
+            questions.append((q_id, sec, dom, top, q_type, diff, text, options, correct, explanation, svg, "APPROVED"))
+
         cur.executemany("""
-            INSERT OR REPLACE INTO questions (question_id, section, domain, topic, question_type, difficulty, question_text, options_json, correct_answer, explanation, svg_payload, status)
+            INSERT OR IGNORE INTO questions (question_id, section, domain, topic, question_type, difficulty, question_text, options_json, correct_answer, explanation, svg_payload, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, questions)
