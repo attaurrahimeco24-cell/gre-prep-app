@@ -40,13 +40,18 @@ def perform_logout():
 # ==============================================================================
 # ========================= EMAIL VERIFICATION ROUTER ==========================
 # ==============================================================================
+# This handles the URL route if SMTP *is* active
 query_params = st.query_params
 if "verify" in query_params:
     raw_token = query_params["verify"]
     token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
     
     result = db_manager.verify_and_use_token(token_hash)
-    st.query_params.clear() 
+    
+    try:
+        del st.query_params["verify"]
+    except Exception:
+        pass 
     
     if result["status"] == "valid":
         st.session_state["verification_success"] = True
@@ -54,8 +59,6 @@ if "verify" in query_params:
         st.error("❌ This verification link has expired. Please log in to request a new one.")
     elif result["status"] == "used":
         st.warning("⚠️ This verification link has already been used.")
-    else:
-        st.error("❌ Invalid verification link.")
 
 if st.session_state.get("verification_success"):
     st.success("✅ Email verified successfully! Your account is now active. You may log in.")
@@ -106,9 +109,8 @@ if not st.session_state.get("authenticated", False):
                         new_user_id = db_manager.create_user(reg_user, reg_email, reg_pass, "STUDENT", is_verified=0)
                         res = email_service.send_verification_email(new_user_id, reg_email, reg_user)
                         
-                        # Catch the Dev Mode URL if SMTP fails
                         if res["status"] == "simulated":
-                            st.session_state["dev_verify_url"] = res["url"]
+                            st.session_state["dev_verify_active"] = True
                             
                         st.success("✅ Account created successfully! Please check your email to verify your account before logging in.")
                     except ValueError as e:
@@ -137,21 +139,26 @@ if not st.session_state.get("is_verified", False):
     with c2:
         st.info(f"We've sent a secure verification link to **{email}**.")
         
-        # SMART DEV MODE UI
-        if "dev_verify_url" in st.session_state:
-            st.warning("⚠️ **DEVELOPMENT MODE:** No SMTP credentials found in Admin settings. To verify your account, click the link below:")
-            # Displaying as a clickable markdown link
-            st.markdown(f"**[Click Here to Verify Account]({st.session_state['dev_verify_url']})**")
+        # ---------------------------------------------------------
+        # SMART DEV MODE UI - BYPASSES STREAMLIT URL ISSUES ENTIRELY
+        # ---------------------------------------------------------
+        if st.session_state.get("dev_verify_active"):
+            st.warning("⚠️ **DEVELOPMENT MODE:** No SMTP credentials configured. Streamlit Cloud blocks URL parameters. Click the button below to instantly verify your account.")
+            if st.button("🔧 INSTANTLY VERIFY ACCOUNT (Dev Mode)", type="primary", use_container_width=True):
+                db_manager.manually_verify_user(user_id, "system_dev", "Dev mode auto-verify")
+                st.session_state["is_verified"] = True
+                st.success("✅ Account verified successfully! Rerunning...")
+                time.sleep(1)
+                st.rerun()
+            st.markdown("<br>", unsafe_allow_html=True)
             
-        st.markdown("<br>", unsafe_allow_html=True)
-        
         btn_c1, btn_c2 = st.columns(2)
         with btn_c1:
             if st.button("Resend Email", use_container_width=True):
                 if db_manager.check_verification_cooldown(user_id, 45):
                     res = email_service.send_verification_email(user_id, email, st.session_state["username"])
                     if res["status"] == "simulated":
-                        st.session_state["dev_verify_url"] = res["url"]
+                        st.session_state["dev_verify_active"] = True
                     st.success("Verification email sent!")
                     st.rerun()
                 else:
@@ -171,7 +178,6 @@ st.sidebar.markdown(f"**User:** `{st.session_state['username']}`")
 st.sidebar.markdown(f"**Access:** {components.status_badge(role)}", unsafe_allow_html=True)
 st.sidebar.divider()
 
-# PREMIUM ICONS APPLIED HERE
 if role == "STUDENT":
     nav_options = ["🧭 Workspace", "⏱️ Exam Simulator", "📈 Performance Analytics"]
 else:
