@@ -7,7 +7,7 @@ import logging
 import hashlib
 import secrets
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Sequence
 
 # ==============================================================================
@@ -28,6 +28,7 @@ SECTION_STRUCTURE = {
 }
 
 ADAPTIVE_THRESHOLDS = {"hard": 0.75, "medium": 0.40}
+VALID_MODES = ["exam_simulation", "practice"]
 QUESTION_SOURCE_TAG = "AI-Generated Practice (GRE Engine v2.0)"
 
 # ==============================================================================
@@ -35,6 +36,28 @@ QUESTION_SOURCE_TAG = "AI-Generated Practice (GRE Engine v2.0)"
 # ==============================================================================
 SCHEMA_SQL = r"""
 PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password_hash BLOB NOT NULL,
+    salt BLOB NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('STUDENT', 'ADMIN', 'SUPER_ADMIN')),
+    is_active INTEGER NOT NULL DEFAULT 1,
+    is_verified INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+    token_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    used_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS questions (
     question_id TEXT PRIMARY KEY,
@@ -103,17 +126,6 @@ CREATE TABLE IF NOT EXISTS user_performance (
     mastery_rating TEXT,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, topic, subtopic)
-);
-
-CREATE TABLE IF NOT EXISTS users (
-    user_id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password_hash BLOB NOT NULL,
-    salt BLOB NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('STUDENT', 'ADMIN', 'SUPER_ADMIN')),
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
@@ -196,10 +208,27 @@ def db_transaction():
     finally:
         cur.close()
 
+def safe_migrations():
+    with db_transaction() as cur:
+        # Schema Evolution for existing databases
+        cur.execute("PRAGMA table_info(questions);")
+        q_cols = [row["name"] for row in cur.fetchall()]
+        if "status" not in q_cols:
+            cur.execute("ALTER TABLE questions ADD COLUMN status TEXT NOT NULL DEFAULT 'APPROVED';")
+            
+        cur.execute("PRAGMA table_info(users);")
+        u_cols = [row["name"] for row in cur.fetchall()]
+        if "is_verified" not in u_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0;")
+
 def seed_default_settings():
     defaults = {
         "quant_time_mins": "47", "verbal_time_mins": "41", "aw_time_mins": "30",
-        "adaptive_threshold_hard": "0.75", "adaptive_threshold_medium": "0.40"
+        "adaptive_threshold_hard": "0.75", "adaptive_threshold_medium": "0.40",
+        "maintenance_mode": "false",
+        "smtp_host": "smtp.example.com", "smtp_port": "587",
+        "smtp_user": "noreply@example.com", "smtp_password": "",
+        "smtp_sender_name": "GRE Platform", "require_email_verification": "true"
     }
     try:
         with db_transaction() as cur:
@@ -241,6 +270,7 @@ def initialize_database() -> None:
     try:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
+        safe_migrations()
         seed_default_settings()
         sync_settings_to_globals()
     except sqlite3.Error as e:
@@ -248,7 +278,7 @@ def initialize_database() -> None:
         raise DatabaseError(f"Failed to initialize schema: {e}")
 
 def verify_schema() -> Dict[str, bool]:
-    required_tables = ["questions", "tests", "users", "admin_audit_logs", "system_settings", "question_versions"]
+    required_tables = ["questions", "tests", "users", "admin_audit_logs", "system_settings", "question_versions", "email_verification_tokens"]
     try:
         with db_cursor() as cur:
             cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
@@ -260,18 +290,27 @@ def verify_schema() -> Dict[str, bool]:
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
-# --- AUTH & USER MANAGEMENT ---
+# ==============================================================================
+# ====================  AUTH & VERIFICATION MODULE  ============================
+# ==============================================================================
 def hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
     if salt is None: salt = secrets.token_bytes(16)
     pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
     return pwd_hash, salt
 
-def create_user(username: str, email: str, password: str, role: str = "STUDENT") -> str:
+def create_user(username: str, email: str, password: str, role: str = "STUDENT", is_verified: int = 0) -> str:
+    # Super Admins are pre-verified automatically during system generation
+    if role == "SUPER_ADMIN":
+        is_verified = 1
+        
     user_id = _new_id("USR")
     pwd_hash, salt = hash_password(password)
     try:
         with db_cursor(commit=True) as cur:
-            cur.execute("INSERT INTO users (user_id, username, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?, ?)", (user_id, username, email, pwd_hash, salt, role))
+            cur.execute(
+                "INSERT INTO users (user_id, username, email, password_hash, salt, role, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                (user_id, username, email, pwd_hash, salt, role, is_verified)
+            )
         return user_id
     except DatabaseError as e:
         if "UNIQUE constraint failed" in str(e): raise ValueError("Username or email already exists.")
@@ -279,22 +318,89 @@ def create_user(username: str, email: str, password: str, role: str = "STUDENT")
 
 def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
     with db_cursor() as cur:
-        cur.execute("SELECT user_id, username, role, password_hash, salt, is_active FROM users WHERE username = ?", (username,))
+        cur.execute("SELECT user_id, username, role, password_hash, salt, is_active, is_verified FROM users WHERE username = ?", (username,))
         user = cur.fetchone()
         if not user or not user["is_active"]: return None
         test_hash, _ = hash_password(password, user["salt"])
-        if test_hash == user["password_hash"]: return {"user_id": user["user_id"], "username": user["username"], "role": user["role"]}
+        if test_hash == user["password_hash"]: 
+            return {
+                "user_id": user["user_id"], 
+                "username": user["username"], 
+                "role": user["role"], 
+                "is_verified": bool(user["is_verified"])
+            }
         return None
 
 def get_all_users() -> List[Dict[str, Any]]:
     with db_cursor() as cur:
-        cur.execute("SELECT user_id, username, email, role, is_active, created_at FROM users ORDER BY created_at DESC")
+        cur.execute("SELECT user_id, username, email, role, is_active, is_verified, created_at FROM users ORDER BY created_at DESC")
         return [dict(row) for row in cur.fetchall()]
 
 def update_user_access(target_user_id: str, new_role: str, is_active: int, admin_id: str, reason: str):
     with db_transaction() as cur:
         cur.execute("UPDATE users SET role = ?, is_active = ? WHERE user_id = ?", (new_role, is_active, target_user_id))
         
+def manually_verify_user(target_user_id: str, admin_id: str, reason: str):
+    """Admin override to manually verify an account."""
+    with db_transaction() as cur:
+        cur.execute("UPDATE users SET is_verified = 1 WHERE user_id = ?", (target_user_id,))
+        log_id = _new_id("LOG")
+        cur.execute("INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (log_id, admin_id, "MANUAL_VERIFY", target_user_id, "0", "1", reason))
+
+# --- CRYPTOGRAPHIC EMAIL TOKENS ---
+def create_verification_token(user_id: str, token_hash: str, expires_in_minutes: int = 60) -> None:
+    """Stores a secure token hash for email verification."""
+    expires_at = (datetime.now() + timedelta(minutes=expires_in_minutes)).isoformat()
+    with db_cursor(commit=True) as cur:
+        # Invalidate any previously pending tokens to prevent token spamming
+        cur.execute("UPDATE email_verification_tokens SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL", (user_id,))
+        
+        token_id = _new_id("TOK")
+        cur.execute("INSERT INTO email_verification_tokens (token_id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)", 
+                    (token_id, user_id, token_hash, expires_at))
+
+def verify_and_use_token(token_hash: str) -> Dict[str, Any]:
+    """Atomically validates a token and marks the user as verified to prevent race conditions."""
+    with db_transaction() as cur:
+        cur.execute("SELECT token_id, user_id, expires_at, used_at FROM email_verification_tokens WHERE token_hash = ?", (token_hash,))
+        row = cur.fetchone()
+        
+        if not row:
+            return {"status": "invalid"}
+        if row["used_at"] is not None:
+            return {"status": "used"}
+        if datetime.now().isoformat() > row["expires_at"]:
+            return {"status": "expired"}
+        
+        # Valid! Atomically mark used and verify user
+        cur.execute("UPDATE email_verification_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_id = ?", (row["token_id"],))
+        cur.execute("UPDATE users SET is_verified = 1 WHERE user_id = ?", (row["user_id"],))
+        return {"status": "valid", "user_id": row["user_id"]}
+
+def check_verification_cooldown(user_id: str, cooldown_seconds: int = 45) -> bool:
+    """Prevents malicious actors from hammering the email provider by enforcing rate limits."""
+    with db_cursor() as cur:
+        cur.execute("SELECT created_at FROM email_verification_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return True
+            
+        # Standardize parsing format to ensure cross-platform compatibility
+        last_created_str = row["created_at"]
+        if "." in last_created_str:
+            last_created = datetime.strptime(last_created_str, "%Y-%m-%dT%H:%M:%S.%f")
+        else:
+            try:
+                last_created = datetime.strptime(last_created_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return True # Fallback if timestamps are weird during migration
+                
+        if (datetime.now() - last_created).total_seconds() < cooldown_seconds:
+            return False
+        return True
+
+# --- ADMIN AUDIT MODULE ---
 def log_admin_action(admin_id: str, action: str, target_object: str, old_val: str = None, new_val: str = None, reason: str = None):
     log_id = _new_id("LOG")
     with db_cursor(commit=True) as cur:
@@ -386,7 +492,7 @@ def count_questions() -> int:
         return cur.fetchone()["c"]
 
 # ==============================================================================
-# ====================  CBT TEST ENGINE MODULE (RESTORED)  =====================
+# ====================  CBT TEST ENGINE MODULE  ================================
 # ==============================================================================
 def create_test(test_type: str) -> str:
     test_id = _new_id("TEST")
