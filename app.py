@@ -1,5 +1,7 @@
 import os
 import sys
+import hashlib
+import time
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -7,13 +9,12 @@ if PROJECT_ROOT not in sys.path:
 
 import streamlit as st
 import gre_platform_merged as db_manager
-from modules import question_engine, testing_engine
+from modules import question_engine, testing_engine, email_service
 from ui import components, test_views, dashboard_views, admin_views
 
 st.set_page_config(page_title="GRE AI Prep Platform", layout="wide", initial_sidebar_state="expanded")
 components.apply_gre_theme()
 
-# --- INITIALIZATION & HEALING (REMOVED CACHE TO PREVENT STREAMLIT CLOUD CRASHES) ---
 def setup_system():
     db_manager.initialize_database()
     question_engine.seed_initial_question_bank()
@@ -22,23 +23,43 @@ def setup_system():
         cur.execute("SELECT COUNT(*) as c FROM users WHERE role = 'SUPER_ADMIN'")
         if cur.fetchone()["c"] == 0:
             try:
-                db_manager.create_user("admin", "admin@greplatform.local", "admin123", "SUPER_ADMIN")
+                db_manager.create_user("admin", "admin@greplatform.local", "admin123", "SUPER_ADMIN", is_verified=1)
             except Exception:
                 pass 
 
 setup_system()
 
 def clear_test_state():
-    keys_to_clear = [
-        "active_test_id", "current_section_payload", "active_sec_instance_id", 
-        "current_q_index", "user_answers", "q_start_time", "marked_for_review"
-    ]
-    for k in keys_to_clear:
-        st.session_state.pop(k, None)
+    keys_to_clear = ["active_test_id", "current_section_payload", "active_sec_instance_id", "current_q_index", "user_answers", "q_start_time", "marked_for_review"]
+    for k in keys_to_clear: st.session_state.pop(k, None)
 
 def perform_logout():
     st.session_state.clear()
     st.rerun()
+
+# ==============================================================================
+# ========================= EMAIL VERIFICATION ROUTER ==========================
+# ==============================================================================
+query_params = st.query_params
+if "verify" in query_params:
+    raw_token = query_params["verify"]
+    token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+    
+    result = db_manager.verify_and_use_token(token_hash)
+    st.query_params.clear() 
+    
+    if result["status"] == "valid":
+        st.session_state["verification_success"] = True
+    elif result["status"] == "expired":
+        st.error("❌ This verification link has expired. Please log in to request a new one.")
+    elif result["status"] == "used":
+        st.warning("⚠️ This verification link has already been used.")
+    else:
+        st.error("❌ Invalid verification link.")
+
+if st.session_state.get("verification_success"):
+    st.success("✅ Email verified successfully! Your account is now active. You may log in.")
+    st.session_state.pop("verification_success", None)
 
 # ==============================================================================
 # ========================= AUTHENTICATION GATEWAY =============================
@@ -67,6 +88,7 @@ if not st.session_state.get("authenticated", False):
                     st.session_state["user_id"] = user_data["user_id"]
                     st.session_state["username"] = user_data["username"]
                     st.session_state["user_role"] = user_data["role"]
+                    st.session_state["is_verified"] = user_data["is_verified"]
                     st.session_state["active_page"] = "🏠 Home" if user_data["role"] == "STUDENT" else "📊 Admin Dashboard"
                     st.toast(f"Welcome back, {user_data['username']}!", icon="✅")
                     st.rerun()
@@ -82,12 +104,51 @@ if not st.session_state.get("authenticated", False):
                     st.error("All fields are required.")
                 else:
                     try:
-                        db_manager.create_user(reg_user, reg_email, reg_pass, "STUDENT")
-                        st.success("Account created successfully! You may now log in.")
+                        # CRITICAL: is_verified=0 strictly enforced
+                        new_user_id = db_manager.create_user(reg_user, reg_email, reg_pass, "STUDENT", is_verified=0)
+                        email_service.send_verification_email(new_user_id, reg_email, reg_user)
+                        st.success("✅ Account created successfully! Please check your email to verify your account before logging in.")
                     except ValueError as e:
                         st.error(str(e))
     st.stop()
 
+# ==============================================================================
+# ======================== PENDING VERIFICATION WALL ===========================
+# ==============================================================================
+if not st.session_state.get("is_verified", False):
+    st.markdown(
+        """
+        <div style='text-align: center; padding: 4rem 0;'>
+            <h1 style='color: var(--primary-color); font-weight: 800;'>✉️ Verify Your Email</h1>
+            <p style='color: var(--text-muted); font-size: 1.1rem;'>Account security requires a verified email address.</p>
+        </div>
+        """, unsafe_allow_html=True
+    )
+    
+    user_id = st.session_state["user_id"]
+    with db_manager.db_cursor() as cur:
+        cur.execute("SELECT email FROM users WHERE user_id = ?", (user_id,))
+        email = cur.fetchone()["email"]
+        
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.info(f"We've sent a secure verification link to **{email}**.")
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        btn_c1, btn_c2 = st.columns(2)
+        with btn_c1:
+            if st.button("Resend Verification Email", use_container_width=True):
+                # Enforce the 45-second Rate Limit Cooldown
+                if db_manager.check_verification_cooldown(user_id, 45):
+                    email_service.send_verification_email(user_id, email, st.session_state["username"])
+                    st.success("Verification email sent! Check your inbox (and spam folder).")
+                else:
+                    st.error("⏱️ Please wait 45 seconds before requesting another email.")
+        with btn_c2:
+            if st.button("Logout", use_container_width=True):
+                perform_logout()
+                
+    st.stop() # CRITICAL: STOPS EXECUTION SO UNVERIFIED USERS CANNOT BYPASS TO THE APP
 
 # ==============================================================================
 # ======================== PROTECTED APPLICATION AREA ==========================
@@ -103,13 +164,7 @@ st.sidebar.divider()
 if role == "STUDENT":
     nav_options = ["🏠 Home", "🚀 Full GRE Simulation", "📊 Analytics Dashboard"]
 else:
-    nav_options = [
-        "📊 Admin Dashboard", 
-        "📝 Question Bank", 
-        "⚙️ Test Configurations", 
-        "👥 User Management",
-        "🛡️ Audit & Security"
-    ]
+    nav_options = ["📊 Admin Dashboard", "📝 Question Bank", "⚙️ Test Configurations", "👥 User Management", "🛡️ Audit & Security"]
 
 current_page = st.session_state.get("active_page")
 if current_page not in nav_options:
