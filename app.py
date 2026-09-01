@@ -13,8 +13,7 @@ from ui import components, test_views, dashboard_views, admin_views
 st.set_page_config(page_title="GRE AI Prep Platform", layout="wide", initial_sidebar_state="expanded")
 components.apply_gre_theme()
 
-# --- INITIALIZATION & BOOTSTRAPPING ---
-@st.cache_resource
+# --- INITIALIZATION & HEALING (REMOVED CACHE TO PREVENT STREAMLIT CLOUD CRASHES) ---
 def setup_system():
     db_manager.initialize_database()
     question_engine.seed_initial_question_bank()
@@ -187,13 +186,12 @@ elif page == "📊 Admin Dashboard":
     with h2: st.markdown(f"**Auth Gateway:** {components.status_badge('OPERATIONAL')}", unsafe_allow_html=True)
     with h3: st.markdown(f"**Test Engine:** {components.status_badge('ACTIVE')}", unsafe_allow_html=True)
 
-elif page == "👥 User Management":
+elif page == "📝 Question Bank":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    admin_views.render_user_management()
+    admin_views.render_question_bank()
 
-elif page == "🛡️ Audit & Security":
+elif page == "⚙️ Test Configurations":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    admin_views.render_audit_logs()
     
     st.markdown("## ⚙️ Test Configurations")
     st.caption("Configure how simulated GRE tests are timed and adaptively routed.")
@@ -244,12 +242,15 @@ elif page == "🛡️ Audit & Security":
 
     components.render_danger_zone("Factory Reset", "Restoring default settings will overwrite all active configurations.")
     if st.button("Restore Default Configuration", type="primary"):
-        db_manager.seed_default_settings() # Re-injects defaults
+        db_manager.seed_default_settings() 
         db_manager.log_admin_action(admin_id, "FACTORY_RESET", "system_settings", reason="Manual Admin Override")
         st.toast("Settings restored to factory defaults.", icon="⚠️")
         st.rerun()
 
-elif page in ["👥 User Management", "🛡️ Audit & Security"]:
+elif page == "👥 User Management":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    st.markdown(f"## {page}")
-    st.warning("Module scheduled for Phase 6 Deployment.")
+    admin_views.render_user_management()
+
+elif page == "🛡️ Audit & Security":
+    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
+    admin_views.render_audit_logs()
