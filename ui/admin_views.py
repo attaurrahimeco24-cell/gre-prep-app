@@ -79,13 +79,13 @@ def render_question_bank():
                         st.session_state["admin_q_target"] = target_edit_id.strip()
                         st.rerun()
 
-        components.render_danger_zone("Factory Content Wipe", "Destroys all custom edits and resets the database strictly to the 62 original seed questions.")
-        if st.button("🔄 Execute Factory Reset", type="primary"):
-            with st.spinner("Purging and rebuilding database..."):
+        components.render_danger_zone("Factory Content Wipe", "Destroys all custom edits and procedurally generates 2,000 fresh questions with geometric SVGs.")
+        if st.button("🔄 Execute Factory Reset & Build 2,000 Questions", type="primary"):
+            with st.spinner("Procedurally generating 2,000 questions... (this takes ~3 seconds)"):
                 question_engine.seed_initial_question_bank(force_reset=True)
-                db_manager.log_admin_action(admin_id, "FACTORY_RESET", "QUESTIONS", reason="Admin requested complete data wipe")
-            st.success("✅ System reset complete.")
-            time.sleep(1)
+                db_manager.log_admin_action(admin_id, "FACTORY_RESET", "QUESTIONS", reason="Admin requested 2000 question build")
+            st.success("✅ 2,000 Questions generated and committed!")
+            time.sleep(1.5)
             st.rerun()
                         
     elif st.session_state["admin_q_mode"] in ["edit", "create"]:
