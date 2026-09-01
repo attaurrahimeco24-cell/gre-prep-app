@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Sequence
 
-# 🔒 PHASE 5: Argon2id Cryptographic Engine Initialization
+# 🔒 Cryptographic Engine Initialization
 try:
     from argon2 import PasswordHasher
     from argon2.exceptions import VerifyMismatchError
@@ -19,9 +19,6 @@ except ImportError:
     ph = None
     logging.warning("argon2-cffi not found. Falling back to PBKDF2. Please update requirements.txt.")
 
-# ==============================================================================
-# ============================  CONFIG SECTION  ===============================
-# ==============================================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DATABASE_PATH = os.path.join(DATA_DIR, "gre_questions.db")
@@ -38,11 +35,7 @@ SECTION_STRUCTURE = {
 
 ADAPTIVE_THRESHOLDS = {"hard": 0.75, "medium": 0.40}
 VALID_MODES = ["exam_simulation", "practice"]
-QUESTION_SOURCE_TAG = "AI-Generated Practice (GRE Engine v2.0)"
 
-# ==============================================================================
-# ============================  SCHEMA SECTION  ===============================
-# ==============================================================================
 SCHEMA_SQL = r"""
 PRAGMA foreign_keys = ON;
 
@@ -90,6 +83,7 @@ CREATE TABLE IF NOT EXISTS questions (
 
 CREATE TABLE IF NOT EXISTS tests (
     test_id TEXT PRIMARY KEY,
+    user_id TEXT,
     test_type TEXT NOT NULL,
     start_timestamp TIMESTAMP,
     end_timestamp TIMESTAMP,
@@ -97,7 +91,8 @@ CREATE TABLE IF NOT EXISTS tests (
     quant_score INTEGER,
     verbal_score INTEGER,
     status TEXT NOT NULL DEFAULT 'in_progress',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS session_sections (
@@ -146,9 +141,6 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 """
 
-# ==============================================================================
-# ==========================  DB MANAGER SECTION  =============================
-# ==============================================================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("db_manager")
 
@@ -195,14 +187,12 @@ def db_transaction():
 
 def safe_migrations():
     with db_transaction() as cur:
-        # Phase 1 Migrations
         cur.execute("PRAGMA table_info(users);")
         u_cols = [row["name"] for row in cur.fetchall()]
         if "is_verified" not in u_cols: cur.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0;")
         if "failed_login_attempts" not in u_cols: cur.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0;")
         if "locked_until" not in u_cols: cur.execute("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP;")
         
-        # 🔒 PHASE 6 MIGRATION: Link tests to students
         cur.execute("PRAGMA table_info(tests);")
         t_cols = [row["name"] for row in cur.fetchall()]
         if "user_id" not in t_cols: cur.execute("ALTER TABLE tests ADD COLUMN user_id TEXT;")
@@ -264,16 +254,12 @@ def initialize_database() -> None:
 
 def _new_id(prefix: str) -> str: return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
-# ==============================================================================
-# ====================  AUTH & VERIFICATION MODULE  ============================
-# ==============================================================================
 def hash_legacy_pbkdf2(password: str, salt: bytes) -> tuple[bytes, bytes]:
     pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
     return pwd_hash, salt
 
 def hash_password_current(password: str) -> tuple[bytes, bytes]:
-    if ph:
-        return ph.hash(password).encode('utf-8'), b'argon2'
+    if ph: return ph.hash(password).encode('utf-8'), b'argon2'
     return hash_legacy_pbkdf2(password, secrets.token_bytes(16))
 
 def create_user(username: str, email: str, password: str, role: str = "STUDENT", is_verified: int = 0) -> str:
@@ -292,14 +278,12 @@ def create_user(username: str, email: str, password: str, role: str = "STUDENT",
         raise e
 
 def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
-    """Strict login verifier with Brute-Force Rate Limiting & Seamless Argon2 Upgrades."""
     with db_cursor(commit=True) as cur:
         cur.execute("SELECT user_id, username, role, password_hash, salt, is_active, is_verified, failed_login_attempts, locked_until FROM users WHERE username = ?", (username,))
         user = cur.fetchone()
         
         if not user or not user["is_active"]: return None
         
-        # 1. Check Brute-Force Lockout Status
         if user["locked_until"]:
             if datetime.now().isoformat() < user["locked_until"]:
                 raise ValueError("🔒 Account locked due to multiple failed login attempts. Please try again in 15 minutes.")
@@ -310,7 +294,6 @@ def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
         is_valid = False
         needs_upgrade = False
         
-        # 2. Cryptographic Validation
         if ph and stored_hash.startswith(b'$argon2'):
             try:
                 ph.verify(stored_hash.decode('utf-8'), password)
@@ -319,27 +302,21 @@ def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
             except VerifyMismatchError:
                 is_valid = False
         else:
-            # PBKDF2 Legacy Verification
             test_hash, _ = hash_legacy_pbkdf2(password, user["salt"])
             if test_hash == stored_hash:
                 is_valid = True
-                needs_upgrade = True # Old PBKDF2 users will be silently upgraded to Argon2
+                needs_upgrade = True
 
-        # 3. Handle Result & Execute Rolling Upgrade
         if is_valid:
             cur.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = ?", (user["user_id"],))
             if needs_upgrade and ph:
                 new_hash = ph.hash(password).encode('utf-8')
                 cur.execute("UPDATE users SET password_hash = ?, salt = ? WHERE user_id = ?", (new_hash, b'argon2', user["user_id"]))
-                logger.info(f"User {user['user_id']} seamlessly upgraded to Argon2id security.")
-            
             return {"user_id": user["user_id"], "username": user["username"], "role": user["role"], "is_verified": bool(user["is_verified"])}
         else:
-            # Increment Failure Counter
             attempts = user["failed_login_attempts"] + 1
             lock_time = None
-            if attempts >= 5:
-                lock_time = (datetime.now() + timedelta(minutes=15)).isoformat()
+            if attempts >= 5: lock_time = (datetime.now() + timedelta(minutes=15)).isoformat()
             cur.execute("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE user_id = ?", (attempts, lock_time, user["user_id"]))
             return None
 
@@ -384,16 +361,13 @@ def check_verification_cooldown(user_id: str, cooldown_seconds: int = 45) -> boo
         row = cur.fetchone()
         if not row: return True
         last_created_str = row["created_at"]
-        
         if "." in last_created_str: last_created = datetime.strptime(last_created_str, "%Y-%m-%dT%H:%M:%S.%f")
         else:
             try: last_created = datetime.strptime(last_created_str, "%Y-%m-%d %H:%M:%S")
             except ValueError: return True 
-                
         if (datetime.now() - last_created).total_seconds() < cooldown_seconds: return False
         return True
 
-# --- ADMIN AUDIT MODULE ---
 def log_admin_action(admin_id: str, action: str, target_object: str, old_val: str = None, new_val: str = None, reason: str = None):
     log_id = _new_id("LOG")
     with db_cursor(commit=True) as cur:
@@ -404,7 +378,6 @@ def get_audit_logs(limit: int = 200) -> List[Dict[str, Any]]:
         cur.execute("SELECT l.timestamp, u.username as admin_username, l.action, l.target_object, l.reason FROM admin_audit_logs l LEFT JOIN users u ON l.admin_id = u.user_id ORDER BY l.timestamp DESC LIMIT ?", (limit,))
         return [dict(row) for row in cur.fetchall()]
 
-# --- QUESTION MODULE ---
 def insert_question(q: Dict[str, Any]) -> str:
     options_json = json.dumps(q.get("options")) if q.get("options") is not None else None
     try:
@@ -479,13 +452,11 @@ def count_questions() -> int:
         cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
         return cur.fetchone()["c"]
 
-# ==============================================================================
-# ====================  CBT TEST ENGINE MODULE  ================================
-# ==============================================================================
-def create_test(test_type: str) -> str:
+def create_test(test_type: str, user_id: str) -> str:
     test_id = _new_id("TEST")
     with db_cursor(commit=True) as cur:
-        cur.execute("INSERT INTO tests (test_id, test_type, start_timestamp, status) VALUES (?, ?, ?, 'in_progress')", (test_id, test_type, datetime.now().isoformat()))
+        cur.execute("INSERT INTO tests (test_id, user_id, test_type, start_timestamp, status) VALUES (?, ?, ?, ?, 'in_progress')", 
+                    (test_id, user_id, test_type, datetime.now().isoformat()))
     return test_id
 
 def create_session_section(test_id: str, section_key: str, difficulty_tier: Optional[str] = None) -> str:
