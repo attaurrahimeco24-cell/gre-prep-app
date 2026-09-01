@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import gre_platform_merged as db_manager
-from modules import question_engine
+from modules import question_engine, email_service
 from ui import components
 
 def ensure_data_seeded(admin_id: str):
@@ -19,7 +19,7 @@ def ensure_data_seeded(admin_id: str):
 
 def render_question_bank():
     admin_id = st.session_state.get("user_id", "system")
-    ensure_data_seeded(admin_id) # Call failsafe
+    ensure_data_seeded(admin_id)
     
     st.markdown("## 📝 Content Architecture")
     st.caption("Manage the psychometric question bank, review lifecycle, and version control.")
@@ -28,7 +28,6 @@ def render_question_bank():
         st.session_state["admin_q_mode"] = "list"
     
     if st.session_state["admin_q_mode"] == "list":
-        # --- PREMIUM DATA GRID ---
         st.markdown("<br>", unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
         with c1: sec_filter = st.selectbox("Section", ["All", "Quantitative Reasoning", "Verbal Reasoning", "Analytical Writing"])
@@ -44,7 +43,6 @@ def render_question_bank():
         if not questions:
             st.info("No content matches your filters.")
         else:
-            # Convert to Pandas for Beautiful Table
             df = pd.DataFrame(questions)
             display_df = df[["question_id", "status", "section", "domain", "difficulty_level", "question_text"]].copy()
             display_df.rename(columns={
@@ -55,7 +53,6 @@ def render_question_bank():
             
             st.markdown(f"**Showing {len(questions)} verified assets**")
             
-            # Interactive Grid
             st.dataframe(
                 display_df,
                 use_container_width=True,
@@ -164,10 +161,9 @@ def render_question_bank():
                     except Exception as e:
                         st.error(f"Failed to commit: {e}")
 
-# ... (render_user_management and render_audit_logs remain functionally identical but benefit from the new CSS) ...
 def render_user_management():
     st.markdown("## 👥 User Management")
-    st.caption("Control platform access, roles, and account statuses.")
+    st.caption("Control platform access, roles, and verification statuses.")
     
     admin_id = st.session_state.get("user_id", "system")
     admin_role = st.session_state.get("user_role", "ADMIN")
@@ -181,8 +177,14 @@ def render_user_management():
         status_text = "ACTIVE" if u['is_active'] else "SUSPENDED"
         badge = components.status_badge(status_text)
         
+        # Determine Verification Badge
+        if u['is_verified']:
+            ver_badge = '<span class="badge badge-success">VERIFIED</span>'
+        else:
+            ver_badge = '<span class="badge badge-warning">PENDING</span>'
+        
         with st.expander(f"👤 {u['username']} ({u['email']})"):
-            st.markdown(f"**Current Role:** `{u['role']}` | **Status:** {badge} | **Joined:** {u['created_at'][:10]}", unsafe_allow_html=True)
+            st.markdown(f"**Role:** `{u['role']}` | **Account Status:** {badge} | **Email Status:** {ver_badge}", unsafe_allow_html=True)
             
             if u['user_id'] == admin_id:
                 st.warning("🔒 You cannot modify your own access privileges.")
@@ -193,22 +195,86 @@ def render_user_management():
                 continue
                 
             with st.form(key=f"form_user_{u['user_id']}"):
-                c1, c2 = st.columns(2)
+                c1, c2, c3 = st.columns(3)
                 with c1:
                     new_role = st.selectbox("Role", ["STUDENT", "ADMIN", "SUPER_ADMIN"], index=["STUDENT", "ADMIN", "SUPER_ADMIN"].index(u['role']))
                 with c2:
                     new_status = st.selectbox("Account Status", ["ACTIVE", "SUSPENDED"], index=0 if u['is_active'] else 1)
+                with c3:
+                    new_ver = st.selectbox("Manual Verification", ["VERIFIED", "PENDING"], index=0 if u['is_verified'] else 1, disabled=bool(u['is_verified']))
                 
-                reason = st.text_input("Reason for Access Change (Required)")
-                if st.form_submit_button("Update User Access", type="primary"):
+                reason = st.text_input("Reason for Access Change (Required for Audit Log)")
+                
+                if st.form_submit_button("Update User Profile", type="primary"):
                     if not reason:
-                        st.error("An audit reason is required to change access privileges.")
+                        st.error("An audit reason is required to change user privileges.")
                     else:
                         is_act_int = 1 if new_status == "ACTIVE" else 0
                         db_manager.update_user_access(u['user_id'], new_role, is_act_int, admin_id, reason)
-                        st.success(f"Successfully updated access for {u['username']}.")
+                        
+                        # Process manual verification override
+                        if new_ver == "VERIFIED" and not u['is_verified']:
+                            db_manager.manually_verify_user(u['user_id'], admin_id, reason)
+                            st.toast(f"{u['username']} has been manually verified.", icon="✅")
+                            
+                        st.success(f"Successfully updated profile for {u['username']}.")
                         time.sleep(1)
                         st.rerun()
+
+def render_email_settings():
+    st.markdown("## 📧 Email & SMTP Configuration")
+    st.caption("Securely configure transactional email delivery for student verification and alerts.")
+    
+    admin_id = st.session_state.get("user_id", "system")
+    current_settings = db_manager.get_all_settings()
+    
+    with st.form("smtp_form"):
+        st.markdown("### SMTP Provider Credentials")
+        components.render_setting_row("Host & Port", "Your SMTP server endpoint and connection port (e.g., smtp.sendgrid.net).")
+        c1, c2 = st.columns([3, 1])
+        with c1: host = st.text_input("SMTP Host", value=current_settings.get("smtp_host", ""))
+        with c2: port = st.text_input("SMTP Port", value=current_settings.get("smtp_port", "587"))
+        
+        components.render_setting_row("Authentication", "Credentials to connect to the SMTP server.")
+        c3, c4 = st.columns(2)
+        with c3: user = st.text_input("SMTP Username", value=current_settings.get("smtp_user", ""))
+        with c4: pwd = st.text_input("SMTP Password", type="password", value=current_settings.get("smtp_password", ""))
+        
+        components.render_setting_row("Sender Identity", "How the email will appear in the student's inbox.")
+        c5, c6 = st.columns(2)
+        with c5: s_name = st.text_input("Sender Display Name", value=current_settings.get("smtp_sender_name", "GRE Platform"))
+        with c6: req_ver = st.selectbox("Require Verification?", ["true", "false"], index=0 if current_settings.get("require_email_verification", "true") == "true" else 1)
+
+        st.divider()
+        reason = st.text_input("Audit Reason (Required)")
+        if st.form_submit_button("💾 Securely Save SMTP Configuration", type="primary"):
+            if not reason:
+                st.error("🔒 Security Halt: Audit reason required to modify SMTP credentials.")
+            else:
+                updates = {
+                    "smtp_host": host, "smtp_port": port, "smtp_user": user, 
+                    "smtp_password": pwd, "smtp_sender_name": s_name, 
+                    "require_email_verification": req_ver
+                }
+                db_manager.update_settings(updates, admin_id, reason)
+                st.success("✅ SMTP configurations updated successfully.")
+                time.sleep(1)
+                st.rerun()
+                
+    st.markdown("### 🧪 Connection Diagnostics")
+    st.caption("Send a secure test email to verify your SMTP configuration is functional.")
+    with st.form("test_email_form"):
+        test_address = st.text_input("Recipient Email Address")
+        if st.form_submit_button("Send Diagnostic Test Email"):
+            if test_address:
+                with st.spinner("Initiating SMTP connection..."):
+                    success = email_service.send_verification_email(admin_id, test_address, "Admin Tester")
+                if success:
+                    st.success(f"✅ Test email successfully dispatched to {test_address}.")
+                else:
+                    st.error("❌ SMTP connection failed. Check your credentials and server logs.")
+            else:
+                st.warning("Please enter a destination email address.")
 
 def render_audit_logs():
     st.markdown("## 🛡️ System Audit Logs")
