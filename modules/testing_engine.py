@@ -4,12 +4,11 @@ import gre_platform_merged as db_manager
 
 logger = logging.getLogger("testing_engine")
 
-def initialize_test_session(test_type: str = "full_length") -> dict:
-    """Initializes a new exam and queues up Section 1."""
+def initialize_test_session(user_id: str, test_type: str = "full_length") -> dict:
     if test_type not in db_manager.VALID_MODES and test_type != "full_length":
         test_type = "full_length"
         
-    test_id = db_manager.create_test(test_type)
+    test_id = db_manager.create_test(test_type, user_id)
     
     first_section_key = None
     for key, config in sorted(db_manager.SECTION_STRUCTURE.items(), key=lambda x: x[1]["order"]):
@@ -31,12 +30,10 @@ def get_active_section_info(test_id: str) -> dict:
             ORDER BY section_start_timestamp DESC LIMIT 1
         """, (test_id,))
         row = cur.fetchone()
-        if row:
-            return dict(row)
+        if row: return dict(row)
     return None
 
 def start_active_section(section_instance_id: str) -> dict:
-    """Starts the timer and returns a CRYPTOGRAPHICALLY SANITIZED payload to the client."""
     start_ts = db_manager.start_session_section(section_instance_id)
     
     with db_manager.db_cursor() as cur:
@@ -49,11 +46,8 @@ def start_active_section(section_instance_id: str) -> dict:
     sec_config = db_manager.SECTION_STRUCTURE[sec_key]
     
     domain_mapping = {
-        "AW": "Analytical Writing",
-        "VERBAL_1": "Verbal Reasoning",
-        "VERBAL_2": "Verbal Reasoning",
-        "QUANT_1": "Quantitative Reasoning",
-        "QUANT_2": "Quantitative Reasoning"
+        "AW": "Analytical Writing", "VERBAL_1": "Verbal Reasoning", "VERBAL_2": "Verbal Reasoning",
+        "QUANT_1": "Quantitative Reasoning", "QUANT_2": "Quantitative Reasoning"
     }
     measure = domain_mapping.get(sec_key, "Quantitative Reasoning")
     
@@ -63,35 +57,25 @@ def start_active_section(section_instance_id: str) -> dict:
     elif tier == "easy": diff_levels = [1, 2]
         
     raw_questions = db_manager.get_questions_filtered(
-        section=measure, 
-        difficulty_levels=diff_levels, 
-        limit=sec_config["question_count"]
+        section=measure, difficulty_levels=diff_levels, limit=sec_config["question_count"]
     )
     
-    # 🔒 PHASE 3 SECURITY REMEDIATION: Strip sensitive data before serialization
+    # SECURITY: Strip answers
     sanitized_questions = []
     for q in raw_questions:
         safe_q = q.copy()
-        # Strictly remove answers from the dictionary sent to the browser
         safe_q.pop("correct_answer", None)
         safe_q.pop("explanation", None)
         sanitized_questions.append(safe_q)
     
     return {
-        "section_instance_id": section_instance_id,
-        "section_name": sec_config["label"],
-        "duration_seconds": time_allotted,
-        "start_timestamp": start_ts,
-        "questions": sanitized_questions
+        "section_instance_id": section_instance_id, "section_name": sec_config["label"],
+        "duration_seconds": time_allotted, "start_timestamp": start_ts, "questions": sanitized_questions
     }
 
 def submit_answer_atomically(test_id: str, section_instance_id: str, question_id: str, user_answer: str, time_spent: int):
-    """Evaluates the answer securely on the server side."""
-    # Fetch the un-sanitized question directly from the DB to check the real answer
     q = db_manager.get_question_by_id(question_id)
-    if not q:
-        logger.error(f"Attempted to submit answer for invalid question ID: {question_id}")
-        return
+    if not q: return
         
     is_correct = (str(user_answer).strip().lower() == str(q["correct_answer"]).strip().lower())
     result = "correct" if is_correct else "incorrect"
@@ -99,7 +83,6 @@ def submit_answer_atomically(test_id: str, section_instance_id: str, question_id
     with db_manager.db_transaction() as cur:
         cur.execute("SELECT response_id FROM test_responses WHERE test_id = ? AND question_id = ?", (test_id, question_id))
         existing = cur.fetchone()
-        
         if existing:
             cur.execute("UPDATE test_responses SET user_answer = ?, result = ?, time_spent_seconds = ? WHERE response_id = ?", 
                         (user_answer, result, time_spent, existing["response_id"]))
@@ -108,9 +91,7 @@ def submit_answer_atomically(test_id: str, section_instance_id: str, question_id
                         (test_id, question_id, section_instance_id, user_answer, q["correct_answer"], result, time_spent))
 
 def complete_section_and_adapt(test_id: str, section_instance_id: str):
-    """Closes section and securely calculates Psychometric Adaptive Routing."""
     db_manager.complete_session_section(section_instance_id)
-    
     with db_manager.db_cursor() as cur:
         cur.execute("SELECT section_key FROM session_sections WHERE section_instance_id = ?", (section_instance_id,))
         row = cur.fetchone()
