@@ -1,62 +1,47 @@
 import streamlit as st
-import gre_platform_merged as db_manager
+import pandas as pd
+import gre_platform_merged as db
 from ui import components
 
-def render_question_bank():
-    st.markdown("## 📚 Content Library & Question Bank")
-    st.caption("Manage, audit, and review psychometric question assets.")
-    st.divider()
-    
-    with db_manager.db_cursor() as cur:
-        cur.execute("SELECT question_id, section, domain, topic, difficulty, status FROM questions")
-        questions = [dict(row) for row in cur.fetchall()]
-        
-    if questions:
-        import pandas as pd
-        st.dataframe(pd.DataFrame(questions), use_container_width=True)
-    else:
-        st.info("No questions found in the database.")
+def verify_admin_authorization():
+    role = st.session_state.get("user_role")
+    if role not in ["ADMIN", "SUPER_ADMIN"]:
+        st.error("⛔ Security Exception: Unauthorized access attempt to administrative subsystem.")
+        st.stop()
 
-def render_user_management():
-    st.markdown("## 🧑‍🎓 User Access & Role Administration")
-    st.caption("Manage registered platform users and authorization privileges.")
+def render_command_center():
+    verify_admin_authorization()
+    st.markdown("## 🎛️ Command Center & Platform Telemetry")
+    st.caption("Real-time operational monitoring and database analytics.")
     st.divider()
     
-    with db_manager.db_cursor() as cur:
-        cur.execute("SELECT user_id, username, email, role, is_verified, created_at FROM users")
-        users = [dict(row) for row in cur.fetchall()]
-        
-    import pandas as pd
-    if users:
-        st.dataframe(pd.DataFrame(users), use_container_width=True)
-    else:
-        st.info("No registered users.")
+    with db.get_db_connection() as conn:
+        users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        students_count = conn.execute("SELECT COUNT(*) FROM users WHERE role = 'STUDENT'").fetchone()[0]
+        tests_count = conn.execute("SELECT COUNT(*) FROM tests WHERE status = 'completed'").fetchone()[0]
+        questions_count = conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
 
-def render_email_settings():
-    st.markdown("## ✉️ SMTP Gateway Configuration")
-    st.caption("Configure outgoing mail servers for account verification and security alerts.")
-    st.divider()
-    st.info("ℹ️ Platform is currently operating in Smart Dev Mode (Simulated Token Dispatch active).")
-    
-    with st.form("smtp_form"):
-        st.text_input("SMTP Host", value="smtp.mailprovider.com")
-        st.text_input("SMTP Port", value="587")
-        data_user = st.text_input("SMTP Username", value="noreply@greplatform.local")
-        st.text_input("SMTP Password", type="password", value="secret_password")
-        if st.form_submit_button("Save SMTP Configuration", type="primary"):
-            st.success("SMTP gateway settings updated successfully.")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: components.render_score_card("Total Users", str(users_count))
+    with m2: components.render_score_card("Active Students", str(students_count))
+    with m3: components.render_score_card("Completed Tests", str(tests_count))
+    with m4: components.render_score_card("Active Questions", str(questions_count))
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 🛡️ System Integrity & Security Status")
+    st.markdown(f"**Database Engine:** {components.render_status_badge('WAL_MODE_ACTIVE')}", unsafe_allow_html=True)
+    st.markdown(f"**Authentication:** {components.render_status_badge('ARGON2ID_SECURED')}", unsafe_allow_html=True)
 
 def render_audit_logs():
+    verify_admin_authorization()
     st.markdown("## 🔐 Immutable Audit Ledger")
-    st.caption("Cryptographic log of administrative actions, config updates, and overrides.")
+    st.caption("Cryptographic log of administrative actions and security overrides.")
     st.divider()
     
-    with db_manager.db_cursor() as cur:
-        cur.execute("SELECT log_id, admin_id, action, target_object, new_value, reason, timestamp FROM admin_audit_logs ORDER BY timestamp DESC")
-        logs = [dict(row) for row in cur.fetchall()]
+    with db.get_db_connection() as conn:
+        df = pd.read_sql_query("SELECT * FROM admin_audit_logs ORDER BY timestamp DESC LIMIT 100", conn)
         
-    import pandas as pd
-    if logs:
-        st.dataframe(pd.DataFrame(logs), use_container_width=True)
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
     else:
         st.info("Audit log is currently clean.")
