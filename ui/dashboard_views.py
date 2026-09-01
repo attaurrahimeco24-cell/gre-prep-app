@@ -1,65 +1,40 @@
 import streamlit as st
-from datetime import datetime
-from modules import analytics_engine, testing_engine
-
-def get_greeting():
-    hour = datetime.now().hour
-    if hour < 12: return "Good morning"
-    elif hour < 17: return "Good afternoon"
-    else: return "Good evening"
+import pandas as pd
+from modules import analytics_engine
+from ui import components
 
 def render_analytics_dashboard():
-    user_id = st.session_state.get("user_id")
-    username = st.session_state.get("username", "Student")
+    user_id = st.session_state["user_id"]
+    data = analytics_engine.get_student_dashboard_data(user_id)
     
-    st.markdown(f"## {get_greeting()}, {username}.")
-    st.caption("Here is your data-driven psychometric performance analysis.")
+    st.markdown("## 📈 Performance Analytics & Diagnostics")
+    st.caption("Review your historical exam metrics, domain proficiency, and AI recommendations.")
     st.divider()
     
-    with st.spinner("Compiling your performance telemetry..."):
-        data = analytics_engine.get_student_dashboard_data(user_id)
-        
     if data["total_tests"] == 0:
-        st.info("You haven't completed any practice tests yet. Your dashboard requires data to generate insights.")
-        st.markdown("### Let's establish your baseline.")
-        if st.button("🚀 Start Diagnostic Exam", type="primary"):
-            st.session_state["active_test_id"] = testing_engine.initialize_test_session(user_id)["test_id"]
-            st.session_state["active_page"] = "⏱️ Exam Simulator"
-            st.rerun()
+        st.info("No completed exam sessions found. Complete a test in your workspace to unlock performance telemetry.")
         return
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Exams Completed", data["total_tests"])
-    c2.metric("Overall Accuracy", f"{data['accuracy']:.1f}%")
-    c3.metric("Questions Answered", data["total_answered"])
-    c4.metric("Avg. Time per Question", f"{data['avg_time']:.1f}s")
-    
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: components.render_score_card("Tests Completed", str(data["total_tests"]))
+    with m2: components.render_score_card("Total Answered", str(data["total_answered"]))
+    with m3: components.render_score_card("Overall Accuracy", f"{round(data['accuracy'], 1)}%")
+    with m4: components.render_score_card("Avg Time / Q", f"{round(data['avg_time'], 1)}s")
+
     st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
     
-    col_chart, col_recs = st.columns([2, 1])
-    with col_chart:
-        st.markdown("### 📊 Domain Accuracy Profile")
+    with c1:
+        st.markdown("### 📊 Domain Accuracy Breakdown")
         if not data["domain_df"].empty:
             st.bar_chart(data["domain_df"].set_index("Domain"))
         else:
-            st.warning("Not enough domain data to plot.")
+            st.info("Insufficient response data for domain breakdown.")
             
-    with col_recs:
-        st.markdown("### 🎯 AI Recommendations")
-        st.markdown(
-            """
-            <div style="background: var(--surface); padding: 16px; border-radius: 8px; border: 1px solid var(--border);">
-                <p style="margin:0; font-size: 0.9rem; color: var(--text-muted);">RECOMMENDED NEXT ACTION</p>
-            """, unsafe_allow_html=True
-        )
-        
+    with c2:
+        st.markdown("### 🎯 AI Diagnostic & Study Plan")
         if data["weakest_domain"]:
-            st.markdown(f"**Focus Area:** {data['weakest_domain']}")
-            st.markdown(f"Your accuracy in this domain is currently **{data['lowest_acc']:.1f}%**. To maximize your score increase, prioritize practice in this area.")
-            st.button(f"Start {data['weakest_domain']} Drill", type="primary", use_container_width=True)
+            st.warning(f"**Focus Area Detected:** Your accuracy in **{data['weakest_domain']}** is currently your lowest at **{round(data['lowest_acc'], 1)}%**.")
+            st.markdown("**Recommended Action:** Allocate 45 minutes today to targeted practice sets focusing on core formulas and foundational principles in this domain.")
         else:
-            st.markdown("**Maintain Consistency**")
-            st.markdown("Your accuracy is balanced across all domains. Continue taking full-length adaptive simulations to build stamina.")
-            st.button("Start Full Simulation", type="primary", use_container_width=True)
-            
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.success("✓ Excellent performance across all tested domains! Keep up the consistent practice.")
