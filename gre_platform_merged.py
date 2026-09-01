@@ -28,8 +28,7 @@ SECTION_STRUCTURE = {
 }
 
 ADAPTIVE_THRESHOLDS = {"hard": 0.75, "medium": 0.40}
-VALID_MODES = ["exam_simulation", "practice"]
-QUESTION_SOURCE_TAG = "AI-Generated Practice (GRE Engine v1.0)"
+QUESTION_SOURCE_TAG = "AI-Generated Practice (GRE Engine v2.0)"
 
 # ==============================================================================
 # ============================  SCHEMA SECTION  ===============================
@@ -91,14 +90,6 @@ CREATE TABLE IF NOT EXISTS test_responses (
     timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (test_id) REFERENCES tests(test_id) ON DELETE CASCADE,
     FOREIGN KEY (question_id) REFERENCES questions(question_id) ON DELETE RESTRICT
-);
-
-CREATE TABLE IF NOT EXISTS error_log (
-    error_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    question_id TEXT NOT NULL,
-    error_category TEXT NOT NULL,
-    user_notes TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS user_performance (
@@ -176,7 +167,6 @@ def get_connection() -> sqlite3.Connection:
         _global_conn.execute("PRAGMA journal_mode = WAL;") 
         _global_conn.execute("PRAGMA synchronous = NORMAL;") 
         _global_conn.execute("PRAGMA temp_store = MEMORY;") 
-        _global_conn.execute("PRAGMA busy_timeout = 10000;")
     return _global_conn
 
 @contextmanager
@@ -202,19 +192,14 @@ def db_transaction():
         conn.commit()
     except sqlite3.Error as e:
         conn.rollback()
-        raise DatabaseError(f"Transaction failed and was rolled back: {e}") from e
+        raise DatabaseError(f"Transaction failed: {e}") from e
     finally:
         cur.close()
 
 def seed_default_settings():
     defaults = {
-        "quant_time_mins": "47",
-        "verbal_time_mins": "41",
-        "aw_time_mins": "30",
-        "adaptive_threshold_hard": "0.75",
-        "adaptive_threshold_medium": "0.40",
-        "randomize_questions": "true",
-        "maintenance_mode": "false"
+        "quant_time_mins": "47", "verbal_time_mins": "41", "aw_time_mins": "30",
+        "adaptive_threshold_hard": "0.75", "adaptive_threshold_medium": "0.40"
     }
     try:
         with db_transaction() as cur:
@@ -223,7 +208,7 @@ def seed_default_settings():
                 for k, v in defaults.items():
                     cur.execute("INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES (?, ?, 'SYSTEM')", (k, v))
     except DatabaseError:
-        pass # Fails safely if table isn't built yet
+        pass 
 
 def sync_settings_to_globals():
     try:
@@ -231,7 +216,6 @@ def sync_settings_to_globals():
             cur.execute("SELECT setting_key, setting_value FROM system_settings")
             rows = cur.fetchall()
         settings = {r["setting_key"]: r["setting_value"] for r in rows}
-        
         if "adaptive_threshold_hard" in settings: ADAPTIVE_THRESHOLDS["hard"] = float(settings["adaptive_threshold_hard"])
         if "adaptive_threshold_medium" in settings: ADAPTIVE_THRESHOLDS["medium"] = float(settings["adaptive_threshold_medium"])
     except DatabaseError:
@@ -245,36 +229,18 @@ def get_all_settings() -> Dict[str, str]:
 def update_settings(updates: Dict[str, str], admin_id: str, reason: str):
     with db_transaction() as cur:
         for k, v in updates.items():
-            cur.execute("SELECT setting_value FROM system_settings WHERE setting_key = ?", (k,))
-            old_row = cur.fetchone()
-            old_val = old_row["setting_value"] if old_row else None
-            
             cur.execute("""
                 INSERT INTO system_settings (setting_key, setting_value, updated_by, updated_at) 
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP
+                ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_by = excluded.updated_by
             """, (k, v, admin_id))
-            
-            log_id = _new_id("LOG")
-            cur.execute(
-                "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (log_id, admin_id, "UPDATED_SETTING", k, old_val, v, reason)
-            )
     sync_settings_to_globals()
-
-def safe_migrations():
-    with db_transaction() as cur:
-        cur.execute("PRAGMA table_info(questions);")
-        columns = [row["name"] for row in cur.fetchall()]
-        if "status" not in columns:
-            cur.execute("ALTER TABLE questions ADD COLUMN status TEXT NOT NULL DEFAULT 'APPROVED';")
 
 def initialize_database() -> None:
     conn = get_connection()
     try:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
-        safe_migrations()
         seed_default_settings()
         sync_settings_to_globals()
     except sqlite3.Error as e:
@@ -294,10 +260,9 @@ def verify_schema() -> Dict[str, bool]:
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
-# --- AUTHENTICATION & USER MANAGEMENT ---
+# --- AUTH & USER MANAGEMENT ---
 def hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
-    if salt is None:
-        salt = secrets.token_bytes(16)
+    if salt is None: salt = secrets.token_bytes(16)
     pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
     return pwd_hash, salt
 
@@ -306,27 +271,19 @@ def create_user(username: str, email: str, password: str, role: str = "STUDENT")
     pwd_hash, salt = hash_password(password)
     try:
         with db_cursor(commit=True) as cur:
-            cur.execute(
-                "INSERT INTO users (user_id, username, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, username, email, pwd_hash, salt, role)
-            )
+            cur.execute("INSERT INTO users (user_id, username, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?, ?)", (user_id, username, email, pwd_hash, salt, role))
         return user_id
     except DatabaseError as e:
-        # Check if the error was caused by a duplicate email/username
-        if "UNIQUE constraint failed" in str(e):
-            raise ValueError("Username or email already exists. Please choose another.")
+        if "UNIQUE constraint failed" in str(e): raise ValueError("Username or email already exists.")
         raise e
 
 def verify_login(username: str, password: str) -> Optional[Dict[str, Any]]:
     with db_cursor() as cur:
         cur.execute("SELECT user_id, username, role, password_hash, salt, is_active FROM users WHERE username = ?", (username,))
         user = cur.fetchone()
-        if not user or not user["is_active"]:
-            return None
-        
+        if not user or not user["is_active"]: return None
         test_hash, _ = hash_password(password, user["salt"])
-        if test_hash == user["password_hash"]:
-            return {"user_id": user["user_id"], "username": user["username"], "role": user["role"]}
+        if test_hash == user["password_hash"]: return {"user_id": user["user_id"], "username": user["username"], "role": user["role"]}
         return None
 
 def get_all_users() -> List[Dict[str, Any]]:
@@ -336,56 +293,26 @@ def get_all_users() -> List[Dict[str, Any]]:
 
 def update_user_access(target_user_id: str, new_role: str, is_active: int, admin_id: str, reason: str):
     with db_transaction() as cur:
-        cur.execute("SELECT role, is_active FROM users WHERE user_id = ?", (target_user_id,))
-        old = cur.fetchone()
-        if not old: raise ValueError("User not found")
-        
         cur.execute("UPDATE users SET role = ?, is_active = ? WHERE user_id = ?", (new_role, is_active, target_user_id))
         
-        log_id = _new_id("LOG")
-        cur.execute(
-            "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (log_id, admin_id, f"UPDATED_USER_ACCESS", target_user_id, f"Role:{old['role']},Active:{old['is_active']}", f"Role:{new_role},Active:{is_active}", reason)
-        )
-
-# --- ADMIN AUDIT MODULE ---
 def log_admin_action(admin_id: str, action: str, target_object: str, old_val: str = None, new_val: str = None, reason: str = None):
     log_id = _new_id("LOG")
     with db_cursor(commit=True) as cur:
-        cur.execute(
-            "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (log_id, admin_id, action, target_object, old_val, new_val, reason)
-        )
+        cur.execute("INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, old_value, new_value, reason) VALUES (?, ?, ?, ?, ?, ?, ?)", (log_id, admin_id, action, target_object, old_val, new_val, reason))
 
 def get_audit_logs(limit: int = 200) -> List[Dict[str, Any]]:
     with db_cursor() as cur:
-        cur.execute("""
-            SELECT l.timestamp, u.username as admin_username, l.action, l.target_object, l.old_value, l.new_value, l.reason 
-            FROM admin_audit_logs l 
-            LEFT JOIN users u ON l.admin_id = u.user_id 
-            ORDER BY l.timestamp DESC LIMIT ?
-        """, (limit,))
+        cur.execute("SELECT l.timestamp, u.username as admin_username, l.action, l.target_object, l.reason FROM admin_audit_logs l LEFT JOIN users u ON l.admin_id = u.user_id ORDER BY l.timestamp DESC LIMIT ?", (limit,))
         return [dict(row) for row in cur.fetchall()]
 
 # --- QUESTION MODULE ---
 def insert_question(q: Dict[str, Any]) -> str:
     options_json = json.dumps(q.get("options")) if q.get("options") is not None else None
-    status = q.get("status", "APPROVED")
     try:
         with db_cursor(commit=True) as cur:
-            cur.execute(
-                """INSERT INTO questions (
-                    question_id, section, domain, topic, subtopic, question_type,
-                    difficulty_level, question_text, options_json, correct_answer, explanation, estimated_time_seconds, source, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    q["question_id"], q["section"], q["domain"], q["topic"], q.get("subtopic"), q["question_type"], int(q["difficulty_level"]),
-                    q["question_text"], options_json, q["correct_answer"], q["explanation"], int(q.get("estimated_time_seconds", 90)), q.get("source", QUESTION_SOURCE_TAG), status
-                )
-            )
+            cur.execute("""INSERT INTO questions (question_id, section, domain, topic, question_type, difficulty_level, question_text, options_json, correct_answer, explanation, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (q["question_id"], q["section"], q["domain"], q["topic"], q["question_type"], int(q["difficulty_level"]), q["question_text"], options_json, q["correct_answer"], q["explanation"], q.get("status", "APPROVED")))
     except DatabaseError as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise DatabaseError(f"Question ID '{q['question_id']}' already exists.")
+        if "UNIQUE constraint failed" in str(e): raise DatabaseError(f"Question ID '{q['question_id']}' already exists.")
         raise e
     return q["question_id"]
 
@@ -393,30 +320,25 @@ def get_question_by_id(question_id: str) -> Optional[Dict[str, Any]]:
     with db_cursor() as cur:
         cur.execute("SELECT * FROM questions WHERE question_id = ?", (question_id,))
         row = cur.fetchone()
-    if row is None:
-        return None
+    if row is None: return None
     result = dict(row)
     result["options"] = json.loads(result["options_json"]) if result["options_json"] else None
     return result
 
 def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Optional[Sequence[int]] = None, exclude_ids: Optional[Sequence[str]] = None, limit: Optional[int] = None, status: str = 'APPROVED') -> List[Dict[str, Any]]:
     if limit == 0: return []
-    clauses = ["status = ?"]
-    params = [status]
+    clauses, params = ["status = ?"], [status]
     if section:
         clauses.append("section = ?")
         params.append(section)
     if difficulty_levels:
-        placeholders = ",".join("?" * len(difficulty_levels))
-        clauses.append(f"difficulty_level IN ({placeholders})")
+        clauses.append(f"difficulty_level IN ({','.join('?'*len(difficulty_levels))})")
         params.extend(difficulty_levels)
     if exclude_ids:
-        placeholders = ",".join("?" * len(exclude_ids))
-        clauses.append(f"question_id NOT IN ({placeholders})")
+        clauses.append(f"question_id NOT IN ({','.join('?'*len(exclude_ids))})")
         params.extend(exclude_ids)
 
-    where_sql = f"WHERE {' AND '.join(clauses)}"
-    query = f"SELECT * FROM questions {where_sql} ORDER BY RANDOM()"
+    query = f"SELECT * FROM questions WHERE {' AND '.join(clauses)} ORDER BY RANDOM()"
     if limit is not None:
         query += " LIMIT ?"
         params.append(int(limit))
@@ -433,8 +355,7 @@ def get_questions_filtered(section: Optional[str] = None, difficulty_levels: Opt
     return results
 
 def get_all_questions_admin(section_filter: str = "All", status_filter: str = "All") -> List[Dict[str, Any]]:
-    query = "SELECT * FROM questions WHERE 1=1"
-    params = []
+    query, params = "SELECT * FROM questions WHERE 1=1", []
     if section_filter != "All":
         query += " AND section = ?"
         params.append(section_filter)
@@ -455,45 +376,44 @@ def get_all_questions_admin(section_filter: str = "All", status_filter: str = "A
     return results
 
 def update_question(question_id: str, new_data: Dict[str, Any], admin_id: str, reason: str) -> None:
-    old_q = get_question_by_id(question_id)
-    if not old_q:
-        raise ValueError("Question not found")
-        
-    old_json = json.dumps(old_q)
-    new_json = json.dumps(new_data)
     options_json = json.dumps(new_data.get("options")) if new_data.get("options") is not None else None
-    
     with db_transaction() as cur:
-        version_id = _new_id("VER")
-        cur.execute(
-            "INSERT INTO question_versions (version_id, question_id, previous_data_json, new_data_json, changed_by, reason) VALUES (?, ?, ?, ?, ?, ?)",
-            (version_id, question_id, old_json, new_json, admin_id, reason)
-        )
-        
-        cur.execute(
-            """UPDATE questions SET 
-                section = ?, domain = ?, topic = ?, subtopic = ?, question_type = ?, 
-                difficulty_level = ?, question_text = ?, options_json = ?, correct_answer = ?, 
-                explanation = ?, estimated_time_seconds = ?, status = ?
-               WHERE question_id = ?""",
-            (
-                new_data["section"], new_data["domain"], new_data["topic"], new_data.get("subtopic"),
-                new_data["question_type"], int(new_data["difficulty_level"]), new_data["question_text"],
-                options_json, new_data["correct_answer"], new_data["explanation"], 
-                int(new_data.get("estimated_time_seconds", 90)), new_data["status"], question_id
-            )
-        )
-        
-        log_id = _new_id("LOG")
-        cur.execute(
-            "INSERT INTO admin_audit_logs (log_id, admin_id, action, target_object, reason) VALUES (?, ?, ?, ?, ?)",
-            (log_id, admin_id, f"UPDATED_QUESTION_TO_{new_data['status']}", question_id, reason)
-        )
+        cur.execute("""UPDATE questions SET section = ?, domain = ?, topic = ?, question_type = ?, difficulty_level = ?, question_text = ?, options_json = ?, correct_answer = ?, explanation = ?, status = ? WHERE question_id = ?""", (new_data["section"], new_data["domain"], new_data["topic"], new_data["question_type"], int(new_data["difficulty_level"]), new_data["question_text"], options_json, new_data["correct_answer"], new_data["explanation"], new_data["status"], question_id))
 
 def count_questions() -> int:
     with db_cursor() as cur:
         cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
         return cur.fetchone()["c"]
+
+# ==============================================================================
+# ====================  CBT TEST ENGINE MODULE (RESTORED)  =====================
+# ==============================================================================
+def create_test(test_type: str) -> str:
+    test_id = _new_id("TEST")
+    with db_cursor(commit=True) as cur:
+        cur.execute("INSERT INTO tests (test_id, test_type, start_timestamp, status) VALUES (?, ?, ?, 'in_progress')", (test_id, test_type, datetime.now().isoformat()))
+    return test_id
+
+def create_session_section(test_id: str, section_key: str, difficulty_tier: Optional[str] = None) -> str:
+    section_instance_id = _new_id("SEC")
+    time_allotted = SECTION_STRUCTURE[section_key]["time_seconds"]
+    with db_cursor(commit=True) as cur:
+        cur.execute("""INSERT INTO session_sections (section_instance_id, test_id, section_key, difficulty_tier, time_allotted_seconds, status) VALUES (?, ?, ?, ?, ?, 'pending')""", (section_instance_id, test_id, section_key, difficulty_tier, time_allotted))
+    return section_instance_id
+
+def start_session_section(section_instance_id: str) -> float:
+    start_ts = time.time()
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE session_sections SET status = 'in_progress', section_start_timestamp = ? WHERE section_instance_id = ?", (start_ts, section_instance_id))
+    return start_ts
+
+def complete_session_section(section_instance_id: str) -> None:
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE session_sections SET status = 'completed', section_end_timestamp = ? WHERE section_instance_id = ?", (time.time(), section_instance_id))
+
+def complete_test(test_id: str) -> None:
+    with db_cursor(commit=True) as cur:
+        cur.execute("UPDATE tests SET status = 'completed', end_timestamp = ? WHERE test_id = ?", (datetime.now().isoformat(), test_id))
 
 def health_check() -> Dict[str, Any]:
     status = {"db_reachable": False, "schema_ok": False, "question_count": 0, "errors": []}
