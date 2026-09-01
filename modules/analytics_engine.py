@@ -2,16 +2,13 @@ import pandas as pd
 import gre_platform_merged as db_manager
 
 def get_student_dashboard_data(user_id: str) -> dict:
-    """Aggregates authentic performance telemetry for a specific student."""
     with db_manager.db_cursor() as cur:
-        # 1. Total Tests
         cur.execute("SELECT COUNT(*) as c FROM tests WHERE user_id = ? AND status = 'completed'", (user_id,))
         total_tests = cur.fetchone()["c"]
         
         if total_tests == 0:
             return {"total_tests": 0}
             
-        # 2. Overall Accuracy & Time
         cur.execute("""
             SELECT 
                 COUNT(*) as total_answered,
@@ -23,7 +20,6 @@ def get_student_dashboard_data(user_id: str) -> dict:
         """, (user_id,))
         overall = cur.fetchone()
         
-        # 3. Domain Performance
         cur.execute("""
             SELECT 
                 q.domain,
@@ -49,7 +45,7 @@ def get_student_dashboard_data(user_id: str) -> dict:
     for row in domain_rows:
         dom_acc = (row["correct"] / row["attempted"] * 100) if row["attempted"] > 0 else 0
         domains.append({"Domain": row["domain"], "Accuracy (%)": round(dom_acc, 1)})
-        if dom_acc < lowest_acc and row["attempted"] >= 3:
+        if dom_acc < lowest_acc and row["attempted"] >= 1:
             lowest_acc = dom_acc
             weakest_domain = row["domain"]
 
