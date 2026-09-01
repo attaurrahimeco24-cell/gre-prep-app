@@ -104,7 +104,6 @@ if not st.session_state.get("authenticated", False):
                     st.error("All fields are required.")
                 else:
                     try:
-                        # CRITICAL: is_verified=0 strictly enforced
                         new_user_id = db_manager.create_user(reg_user, reg_email, reg_pass, "STUDENT", is_verified=0)
                         email_service.send_verification_email(new_user_id, reg_email, reg_user)
                         st.success("✅ Account created successfully! Please check your email to verify your account before logging in.")
@@ -138,7 +137,6 @@ if not st.session_state.get("is_verified", False):
         btn_c1, btn_c2 = st.columns(2)
         with btn_c1:
             if st.button("Resend Verification Email", use_container_width=True):
-                # Enforce the 45-second Rate Limit Cooldown
                 if db_manager.check_verification_cooldown(user_id, 45):
                     email_service.send_verification_email(user_id, email, st.session_state["username"])
                     st.success("Verification email sent! Check your inbox (and spam folder).")
@@ -148,7 +146,7 @@ if not st.session_state.get("is_verified", False):
             if st.button("Logout", use_container_width=True):
                 perform_logout()
                 
-    st.stop() # CRITICAL: STOPS EXECUTION SO UNVERIFIED USERS CANNOT BYPASS TO THE APP
+    st.stop()
 
 # ==============================================================================
 # ======================== PROTECTED APPLICATION AREA ==========================
@@ -156,7 +154,6 @@ if not st.session_state.get("is_verified", False):
 role = st.session_state.get("user_role", "STUDENT")
 admin_id = st.session_state.get("user_id", "system")
 
-# --- HIERARCHICAL SIDEBAR NAVIGATION ---
 st.sidebar.markdown(f"**User:** `{st.session_state['username']}`")
 st.sidebar.markdown(f"**Role:** {components.status_badge(role)}", unsafe_allow_html=True)
 st.sidebar.divider()
@@ -164,7 +161,7 @@ st.sidebar.divider()
 if role == "STUDENT":
     nav_options = ["🏠 Home", "🚀 Full GRE Simulation", "📊 Analytics Dashboard"]
 else:
-    nav_options = ["📊 Admin Dashboard", "📝 Question Bank", "⚙️ Test Configurations", "👥 User Management", "🛡️ Audit & Security"]
+    nav_options = ["📊 Admin Dashboard", "📝 Question Bank", "⚙️ Test Configurations", "👥 User Management", "📧 Email Settings", "🛡️ Audit & Security"]
 
 current_page = st.session_state.get("active_page")
 if current_page not in nav_options:
@@ -305,6 +302,10 @@ elif page == "⚙️ Test Configurations":
 elif page == "👥 User Management":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
     admin_views.render_user_management()
+
+elif page == "📧 Email Settings":
+    if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
+    admin_views.render_email_settings()
 
 elif page == "🛡️ Audit & Security":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
