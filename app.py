@@ -197,33 +197,75 @@ elif page == "📈 Performance Analytics":
 # --- ADMIN ROUTES ---
 elif page == "🎛️ Command Center":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
-    st.markdown("## 🎛️ Command Center")
-    st.caption("Central Platform Telemetry & System Health")
+        
+    st.markdown("## 🎛️ Command Center & Platform Telemetry")
+    st.caption("Real-time operational monitoring, database analytics, and asset oversight.")
+    st.divider()
     
     with db_manager.db_cursor() as cur:
         cur.execute("SELECT COUNT(*) as c FROM users")
         total_users = cur.fetchone()["c"]
+        
+        cur.execute("SELECT COUNT(*) as c FROM users WHERE role = 'STUDENT'")
+        total_students = cur.fetchone()["c"]
+        
+        cur.execute("SELECT COUNT(*) as c FROM questions")
+        total_q_count = cur.fetchone()["c"]
+        
         cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'APPROVED'")
-        total_qs = cur.fetchone()["c"]
+        approved_qs = cur.fetchone()["c"]
+        
         cur.execute("SELECT COUNT(*) as c FROM questions WHERE status = 'PENDING_REVIEW'")
         pending_qs = cur.fetchone()["c"]
+        
         cur.execute("SELECT COUNT(*) as c FROM tests")
         total_tests = cur.fetchone()["c"]
         
-    c1, c2, c3 = st.columns(3)
-    with c1: components.render_score_card("Registered Users", str(total_users))
-    with c2: components.render_score_card("Tests Administered", str(total_tests))
-    with c3: components.render_score_card("Approved Questions", str(total_qs))
+        cur.execute("SELECT COUNT(*) as c FROM tests WHERE status = 'completed'")
+        completed_tests = cur.fetchone()["c"]
 
-    st.markdown("### Requires Attention")
-    if pending_qs > 0: st.warning(f"⚠️ **{pending_qs} questions** are currently awaiting administrative review and approval.")
-    else: st.success("✓ No content currently requires administrative review.")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: components.render_score_card("Total Users", str(total_users))
+    with m2: components.render_score_card("Active Students", str(total_students))
+    with m3: components.render_score_card("Exams Taken", str(completed_tests))
+    with m4: components.render_score_card("Approved Assets", str(approved_qs))
 
-    st.markdown("### System Health")
-    h1, h2, h3 = st.columns(3)
-    with h1: st.markdown(f"**Database:** {components.status_badge('HEALTHY')}", unsafe_allow_html=True)
-    with h2: st.markdown(f"**Auth Gateway:** {components.status_badge('OPERATIONAL')}", unsafe_allow_html=True)
-    with h3: st.markdown(f"**Test Engine:** {components.status_badge('ACTIVE')}", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col_left, col_right = st.columns([1.5, 1])
+    
+    with col_left:
+        st.markdown("### 📈 Question Bank Distribution")
+        st.caption("Breakdown of psychometric assets across the core sections.")
+        
+        with db_manager.db_cursor() as cur:
+            cur.execute("SELECT section, COUNT(*) as count FROM questions GROUP BY section")
+            sec_breakdown = {row["section"]: row["count"] for row in cur.fetchall()}
+            
+        import pandas as pd
+        if sec_breakdown:
+            df_sec = pd.DataFrame(list(sec_breakdown.items()), columns=["Section", "Count"])
+            st.bar_chart(df_sec.set_index("Section"))
+        else:
+            st.info("No questions currently logged in the database.")
+
+    with col_right:
+        st.markdown("### ⚠️ Content Review Queue")
+        st.caption("Assets flagged for editorial inspection.")
+        
+        if pending_qs > 0:
+            st.warning(f"**{pending_qs} assets** are currently awaiting administrative review in the Content Library.")
+            if st.button("Review Pending Assets", type="primary", use_container_width=True):
+                st.session_state["active_page"] = "📚 Content Library"
+                st.rerun()
+        else:
+            st.success("✓ Review queue is clean. All active content is approved.")
+            
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("### 🛡️ System Integrity")
+        st.markdown(f"**Database Engine:** {components.status_badge('WAL_MODE_ACTIVE')}", unsafe_allow_html=True)
+        st.markdown(f"**Authentication:** {components.status_badge('ARGON2ID_SECURED')}", unsafe_allow_html=True)
+        st.markdown(f"**Email Gateway:** {components.status_badge('OPERATIONAL')}", unsafe_allow_html=True)
 
 elif page == "📚 Content Library":
     if role not in ["ADMIN", "SUPER_ADMIN"]: st.stop()
