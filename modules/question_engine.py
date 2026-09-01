@@ -3,23 +3,36 @@ import uuid
 import gre_platform_merged as db_manager
 
 def generate_svg_triangle(base, height):
+    """Generates an authentic, high-contrast black & white GRE triangle diagram."""
     return f'''
-    <div style="background: var(--surface, white); padding: 16px; border-radius: 8px; width: max-content; margin: 16px 0; border: 1px solid var(--border, #E2E8F0);">
-        <svg height="150" width="220" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="50,120 180,120 115,20" style="fill:rgba(79,70,229,0.1);stroke:#4F46E5;stroke-width:2" />
-            <text x="100" y="140" fill="currentColor" font-weight="bold" font-family="sans-serif">Base = {base}</text>
-            <text x="125" y="75" fill="currentColor" font-weight="bold" font-family="sans-serif">Height = {height}</text>
+    <div style="background: #FFFFFF; padding: 24px; border-radius: 4px; width: max-content; margin: 16px 0; border: 2px solid #000000; box-shadow: 2px 2px 0px #000000;">
+        <svg height="160" width="240" xmlns="http://www.w3.org/2000/svg">
+            <!-- Triangle Outline -->
+            <polygon points="40,130 200,130 120,30" style="fill:transparent;stroke:#000000;stroke-width:3;stroke-linejoin:round" />
+            <!-- Altitude (Height) Dashed Line -->
+            <line x1="120" y1="30" x2="120" y2="130" style="stroke:#000000;stroke-width:2;stroke-dasharray:6,4" />
+            <!-- Right Angle Square -->
+            <polyline points="120,115 135,115 135,130" style="fill:transparent;stroke:#000000;stroke-width:2" />
+            <!-- Labels -->
+            <text x="100" y="152" fill="#000000" font-weight="bold" font-family="Arial, sans-serif" font-size="16">Base = {base}</text>
+            <text x="130" y="85" fill="#000000" font-weight="bold" font-family="Arial, sans-serif" font-size="16">h = {height}</text>
         </svg>
     </div>
     '''
 
 def generate_svg_circle(radius):
+    """Generates an authentic, high-contrast black & white GRE circle diagram."""
     return f'''
-    <div style="background: var(--surface, white); padding: 16px; border-radius: 8px; width: max-content; margin: 16px 0; border: 1px solid var(--border, #E2E8F0);">
-        <svg height="150" width="150" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="75" cy="75" r="60" style="fill:rgba(16,185,129,0.1);stroke:#10B981;stroke-width:2" />
-            <line x1="75" y1="75" x2="135" y2="75" style="stroke:currentColor;stroke-width:2;stroke-dasharray:4" />
-            <text x="90" y="70" fill="currentColor" font-weight="bold" font-family="sans-serif">r = {radius}</text>
+    <div style="background: #FFFFFF; padding: 24px; border-radius: 4px; width: max-content; margin: 16px 0; border: 2px solid #000000; box-shadow: 2px 2px 0px #000000;">
+        <svg height="160" width="160" xmlns="http://www.w3.org/2000/svg">
+            <!-- Circle Outline -->
+            <circle cx="80" cy="80" r="65" style="fill:transparent;stroke:#000000;stroke-width:3" />
+            <!-- Center Dot -->
+            <circle cx="80" cy="80" r="4" style="fill:#000000" />
+            <!-- Radius Dashed Line -->
+            <line x1="80" y1="80" x2="145" y2="80" style="stroke:#000000;stroke-width:2;stroke-dasharray:6,4" />
+            <!-- Label -->
+            <text x="95" y="72" fill="#000000" font-weight="bold" font-family="Arial, sans-serif" font-size="16">r = {radius}</text>
         </svg>
     </div>
     '''
@@ -27,7 +40,7 @@ def generate_svg_circle(radius):
 def generate_2000_questions():
     questions = []
     
-    # --- 1000 QUANTITATIVE QUESTIONS ---
+    # --- QUANTITATIVE QUESTIONS ---
     # Algebra (300)
     for _ in range(300):
         a = random.randint(2, 9)
@@ -46,7 +59,7 @@ def generate_2000_questions():
         }
         questions.append(q)
 
-    # Geometry with SVGs (400)
+    # Geometry with B&W SVGs (400)
     for _ in range(200):
         b = random.randint(4, 20)
         h = random.randint(4, 20)
@@ -56,7 +69,7 @@ def generate_2000_questions():
             "section": "Quantitative Reasoning",
             "domain": "Geometry", "topic": "Triangles",
             "question_type": "Multiple Choice", "difficulty_level": random.randint(2, 5),
-            "question_text": f"As shown in the diagram below, a triangle has a base of {b} and a height of {h}. What is the area of the triangle? {generate_svg_triangle(b, h)}",
+            "question_text": f"As shown in the figure below, a triangle has a base of {b} and a height of {h}. What is the area of the triangle? {generate_svg_triangle(b, h)}",
             "options": [str(area), str(area + 5), str(b*h), str((b*h)/3), str(area - 2)],
             "correct_answer": str(area),
             "explanation": f"The area of a triangle is 0.5 * base * height. 0.5 * {b} * {h} = {area}."
@@ -71,7 +84,7 @@ def generate_2000_questions():
             "section": "Quantitative Reasoning",
             "domain": "Geometry", "topic": "Circles",
             "question_type": "Multiple Choice", "difficulty_level": random.randint(2, 5),
-            "question_text": f"A circle has a radius of {r} as shown. Which of the following is closest to its area? {generate_svg_circle(r)}",
+            "question_text": f"A circle has a radius of {r} as shown below. Which of the following is closest to its area? {generate_svg_circle(r)}",
             "options": [f"{area:.1f}", f"{(area+10):.1f}", f"{(2*3.14159*r):.1f}", f"{(area*2):.1f}", f"{(r**2):.1f}"],
             "correct_answer": f"{area:.1f}",
             "explanation": f"Area = πr². 3.14159 * {r}² ≈ {area:.1f}."
@@ -95,7 +108,7 @@ def generate_2000_questions():
         }
         questions.append(q)
 
-    # --- 800 VERBAL QUESTIONS ---
+    # --- VERBAL QUESTIONS (800) ---
     vocab_words = [("ephemeral", "short-lived"), ("mitigate", "alleviate"), ("sycophant", "flatterer"), ("cacophony", "harsh noise"), ("obdurate", "stubborn")]
     for _ in range(400):
         word, meaning = random.choice(vocab_words)
@@ -124,7 +137,7 @@ def generate_2000_questions():
         }
         questions.append(q)
 
-    # --- 200 AWA QUESTIONS ---
+    # --- AWA QUESTIONS (200) ---
     for _ in range(200):
         q = {
             "question_id": f"Q-AWA-{uuid.uuid4().hex[:6]}",
@@ -141,7 +154,7 @@ def generate_2000_questions():
     return questions
 
 def seed_initial_question_bank(force_reset=False):
-    """Generates and securely batch-inserts 2000 questions if the DB is empty."""
+    """Generates and securely batch-inserts 2000 questions."""
     db_manager.initialize_database()
     
     count = db_manager.count_questions()
@@ -154,7 +167,6 @@ def seed_initial_question_bank(force_reset=False):
             
     questions = generate_2000_questions()
     
-    # Fast loop insertion
     for q in questions:
         try:
             db_manager.insert_question(q)
